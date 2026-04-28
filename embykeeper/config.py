@@ -139,6 +139,11 @@ class ConfigManager(ProxyBase):
     def generate_example_config():
         """生成配置文件骨架, 并填入生成的信息."""
 
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         from tomlkit import document, nl, comment, item, dumps
         from tomlkit.items import InlineTable
         from faker import Faker

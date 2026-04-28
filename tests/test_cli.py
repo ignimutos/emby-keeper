@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 from typer.testing import CliRunner
@@ -26,5 +27,14 @@ def test_version():
 
 def test_create_config(in_temp_dir: Path):
     result = runner.invoke(app, ["--example-config"])
+    assert "这是一个配置文件范例" in result.stdout
+    assert result.exit_code == 0
+
+
+def test_create_config_after_asyncio_run(in_temp_dir: Path):
+    asyncio.run(asyncio.sleep(0))
+
+    result = runner.invoke(app, ["--example-config"])
+
     assert "这是一个配置文件范例" in result.stdout
     assert result.exit_code == 0
