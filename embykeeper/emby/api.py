@@ -16,6 +16,7 @@ from embykeeper.utils import get_proxy_str, show_exception, truncate_str
 from embykeeper.cache import cache
 from embykeeper.schema import EmbyAccount
 from embykeeper.config import config
+from embykeeper.emby.notification import EmbyPlaybackSnapshot, EmbyWatchResult, has_userdata_update
 
 logger = logger.bind(scheme="embywatcher")
 
@@ -851,7 +852,41 @@ class Emby:
         response = await self._request("POST", f"/Users/{self.user_id}/PlayedItems/{item_id}")
         return response.status_code == 200
 
-    async def watch(self):
+    def _account_spec(self) -> str:
+        return f"{self.a.username}@{self.a.name or self.a.url.host}"
+
+    def _snapshot_from_item(self, item: Optional[dict]) -> EmbyPlaybackSnapshot:
+        userdata = (item or {}).get("UserData", {})
+        return EmbyPlaybackSnapshot(
+            last_played_date=self.parse_date(userdata.get("LastPlayedDate")),
+            play_count=userdata.get("PlayCount"),
+            playback_position_ticks=userdata.get("PlaybackPositionTicks"),
+            runtime_ticks=(item or {}).get("RunTimeTicks"),
+        )
+
+    def _build_watch_result(
+        self,
+        *,
+        success: bool,
+        failure_stage: Optional[str],
+        item_name: Optional[str],
+        item_id: Optional[str],
+        before_item: Optional[dict],
+        after_item: Optional[dict],
+    ) -> EmbyWatchResult:
+        before = before_item or {}
+        after = after_item or {}
+        return EmbyWatchResult(
+            account_spec=self._account_spec(),
+            success=success,
+            failure_stage=failure_stage,
+            item_name=after.get("Name") or before.get("Name") or item_name,
+            item_id=after.get("Id") or before.get("Id") or item_id,
+            before=self._snapshot_from_item(before_item),
+            after=self._snapshot_from_item(after_item),
+        )
+
+    async def watch(self) -> EmbyWatchResult:
         """Play one or more videos until account time requirement played."""
 
         try:
@@ -861,7 +896,14 @@ class Emby:
                 req_time = self.a.time
         except TypeError:
             self.log.warning(f"无法解析 time 配置, 请检查配置: {self.a.time} (应该为数字或两个数字的数组).")
-            return False
+            return self._build_watch_result(
+                success=False,
+                failure_stage="配置错误",
+                item_name=None,
+                item_id=None,
+                before_item=None,
+                after_item=None,
+            )
         msg = " (允许播放多个)" if self.a.allow_multiple else ""
         msg = f"开始播放视频{msg}, 共需播放 {req_time:.0f} 秒."
         self.log.info(msg)
@@ -908,19 +950,60 @@ class Emby:
                 self.log.info(f'开始播放 "{name}" ({play_time:.0f} 秒).')
                 self.log.debug(f"视频 ID: {iid}.")
                 while True:
+                    before_item = None
+                    after_item = None
                     try:
+                        try:
+                            before_item = await self.get_item(iid)
+                        except Exception as e:
+                            self.log.warning(f"播放前无法读取结果, 保活失败: {e}.")
+                            return self._build_watch_result(
+                                success=False,
+                                failure_stage="结果读取失败",
+                                item_name=item.get("Name"),
+                                item_id=iid,
+                                before_item=None,
+                                after_item=None,
+                            )
                         await self.play(item, time=play_time)
                         await asyncio.sleep(random.random())
-                        item = await self.get_item(iid)
-                        play_count = item.get("UserData", {}).get("PlayCount", 0)
-                        if play_count < 1:
-                            raise EmbyPlayError("播放后播放数低于 1")
-                        self.log.info(f"[yellow]成功播放视频[/], 当前该视频播放 {play_count} 次.")
+                        try:
+                            after_item = await self.get_item(iid)
+                        except Exception as e:
+                            self.log.warning(f"播放后无法读取结果, 保活失败: {e}.")
+                            return self._build_watch_result(
+                                success=False,
+                                failure_stage="结果读取失败",
+                                item_name=item.get("Name"),
+                                item_id=iid,
+                                before_item=before_item,
+                                after_item=None,
+                            )
+                        before_snapshot = self._snapshot_from_item(before_item)
+                        after_snapshot = self._snapshot_from_item(after_item)
+                        updated = has_userdata_update(before_snapshot, after_snapshot)
+                        result = self._build_watch_result(
+                            success=updated,
+                            failure_stage=None if updated else "播放后校验未生效",
+                            item_name=item.get("Name"),
+                            item_id=iid,
+                            before_item=before_item,
+                            after_item=after_item,
+                        )
+                        if not updated:
+                            self.log.warning("播放后校验未生效, 保活失败.")
+                            return result
+                        if after_snapshot.play_count is not None:
+                            self.log.info(
+                                f"[yellow]成功播放视频[/], 当前该视频播放 {after_snapshot.play_count} 次."
+                            )
+                        else:
+                            self.log.info("[yellow]成功播放视频[/], Emby 已回写播放记录.")
                         played_videos += 1
                         played_time += play_time
                         if played_time >= req_time - 1:
-                            self.log.bind(log=True).info(f"保活成功, 共播放 {played_videos} 个视频.")
-                            return True
+                            self.log.info(f"保活成功, 共播放 {played_videos} 个视频.")
+                            return result
                         else:
                             self.log.info(f"还需播放 {req_time - played_time:.0f} 秒.")
                             rt = random.uniform(5, 15)
@@ -931,7 +1014,14 @@ class Emby:
                         retry += 1
                         if retry > config.emby.retries:
                             self.log.warning(f"超过最大重试次数, 保活失败: {e}.")
-                            return False
+                            return self._build_watch_result(
+                                success=False,
+                                failure_stage="播放中断" if isinstance(e, EmbyPlayError) else "开始播放失败",
+                                item_name=item.get("Name"),
+                                item_id=iid,
+                                before_item=before_item,
+                                after_item=after_item,
+                            )
                         else:
                             rt = random.uniform(30, 60)
                             if isinstance(e, EmbyPlayError):
@@ -942,7 +1032,14 @@ class Emby:
                     except Exception as e:
                         self.log.warning(f"发生错误, 保活失败.")
                         show_exception(e, regular=False)
-                        return False
+                        return self._build_watch_result(
+                            success=False,
+                            failure_stage="播放中断",
+                            item_name=item.get("Name"),
+                            item_id=iid,
+                            before_item=before_item,
+                            after_item=after_item,
+                        )
             else:
                 if len(failed_items) == len(self.items):
                     reasons = []
@@ -957,12 +1054,27 @@ class Emby:
                             f"{failed_reasons['short_length']} 个视频时长不足 (未开启 allow_multiple)"
                         )
                     self.log.warning(f"所有视频均不符合要求, 保活失败. 其中: {', '.join(reasons)}")
+                    return self._build_watch_result(
+                        success=False,
+                        failure_stage="获取视频失败",
+                        item_name=None,
+                        item_id=None,
+                        before_item=None,
+                        after_item=None,
+                    )
                 elif played_time > last_played_time:
                     last_played_time = played_time
                     continue
                 else:
                     self.log.warning(f"由于没有成功播放视频, 保活失败, 请重新检查配置.")
-                    return False
+                    return self._build_watch_result(
+                        success=False,
+                        failure_stage="获取视频失败",
+                        item_name=None,
+                        item_id=None,
+                        before_item=None,
+                        after_item=None,
+                    )
 
     @staticmethod
     def parse_date(date_str: str) -> Optional[datetime]:

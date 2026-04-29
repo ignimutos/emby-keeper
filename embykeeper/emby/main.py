@@ -16,6 +16,7 @@ from embykeeper.schema import EmbyAccount
 from embykeeper.utils import AsyncTaskPool
 
 from .api import Emby, EmbyPlayError, EmbyConnectError, EmbyRequestError, EmbyError
+from .notification import EmbyWatchResult, format_watch_notification
 
 logger = logger.bind(scheme="embywatcher")
 
@@ -92,7 +93,7 @@ class EmbyManager:
         interval = account.interval_days or config.emby.interval_days
 
         def make_on_next_time(spec):
-            return lambda t: logger.bind(log=True).info(
+            return lambda t: logger.info(
                 f"下一次 Emby 账号 ({spec}) 的保活将在 {t.strftime('%m-%d %H:%M %p')} 进行."
             )
 
@@ -122,7 +123,7 @@ class EmbyManager:
         if not unified_accounts:
             return None
 
-        on_next_time = lambda t: logger.bind(log=True).info(
+        on_next_time = lambda t: logger.info(
             f"下一次 Emby 保活将在 {t.strftime('%m-%d %H:%M %p')} 进行."
         )
 
@@ -230,24 +231,34 @@ class EmbyManager:
     def get_spec(self, a: EmbyAccount):
         return f"{a.username}@{a.name or a.url.host}"
 
+    def _get_next_watch_time(self, account: EmbyAccount) -> Optional[datetime]:
+        spec = self.get_spec(account)
+        scheduler = self._schedulers.get(spec)
+        if scheduler:
+            return scheduler.next_time
+        scheduler = self._schedulers.get("unified")
+        return scheduler.next_time if scheduler else None
+
     async def _watch_main(self, accounts: List[EmbyAccount], instant: bool = False):
         if not accounts:
             return None
         logger.info("开始执行 Emby 保活.")
-        tasks = []
         sem = asyncio.Semaphore(config.emby.concurrency or 100000)
 
         ctx = RunContext.prepare(description="使用全局设置的 Emby 统一保活")
         ctx.start(RunStatus.INITIALIZING)
 
+        def build_failed_result(account: EmbyAccount, stage: str) -> EmbyWatchResult:
+            return EmbyWatchResult(account_spec=self.get_spec(account), success=False, failure_stage=stage)
+
         async def watch_wrapper(account: EmbyAccount, sem):
             async with sem:
                 try:
                     emby = Emby(account)
-                except Exception:
+                except Exception as e:
                     logger.error(f"初始化失败: {e}")
                     show_exception(e, regular=False)
-                    return account, False
+                    return account, build_failed_result(account, "开始播放失败")
                 if not instant:
                     wait = random.uniform(180, 360)
                     emby.log.info(f"播放视频前随机等待 {wait:.0f} 秒.")
@@ -258,11 +269,11 @@ class EmbyManager:
                         if not emby.user_id:
                             if not await emby.login():
                                 emby.log.warning(f"保活失败: 无法登陆.")
-                                return account, False
+                                return account, build_failed_result(account, "登录失败")
                         await emby.load_main_page()
                         if not emby.items:
                             emby.log.warning("保活失败: 无法获取首页中的视频项目")
-                            return account, False
+                            return account, build_failed_result(account, "获取视频失败")
                         else:
                             emby.log.info(f"成功登陆, 获取了 {len(emby.items)} 个首页视频项目.")
                         await asyncio.sleep(random.uniform(2, 5))
@@ -271,11 +282,11 @@ class EmbyManager:
                         if not emby.user_id:
                             if not await emby.login():
                                 emby.log.warning(f"保活失败: 无法登陆.")
-                                return account, False
+                                return account, build_failed_result(account, "登录失败")
                         item = await emby.get_item(account.play_id)
-                        if not "Id" in item:
+                        if "Id" not in item:
                             emby.log.warning("保活失败: 无法获取视频项目")
-                            return account, False
+                            return account, build_failed_result(account, "获取视频失败")
                         else:
                             emby.items[item["Id"]] = item
                             emby.log.info(f"成功登陆, 获取了视频项目.")
@@ -283,38 +294,39 @@ class EmbyManager:
                     return account, await emby.watch()
                 except EmbyError as e:
                     emby.log.warning(f"保活失败: {e}.")
-                    return account, False
+                    return account, build_failed_result(account, "获取视频失败")
                 except Exception as e:
                     emby.log.warning(f"保活失败: {e}")
                     show_exception(e, regular=False)
-                    return account, False
+                    return account, build_failed_result(account, "开始播放失败")
 
-        for account in accounts:
-            if account.enabled:
-                tasks.append(watch_wrapper(account, sem))
+        tasks = [asyncio.create_task(watch_wrapper(account, sem)) for account in accounts if account.enabled]
+        if not tasks:
+            logger.info("没有需要执行的 Emby 保活账号")
+            return ctx.finish(RunStatus.SUCCESS, "无可执行账号")
 
         failed_accounts = []
         successful_accounts = []
-        results = await asyncio.gather(*tasks)
-        for a, success in results:
-            if success:
-                successful_accounts.append(self.get_spec(a))
+        for task in asyncio.as_completed(tasks):
+            account, result = await task
+            result.next_time = self._get_next_watch_time(account)
+            logger.bind(log=True).info(format_watch_notification(result))
+            if result.success:
+                successful_accounts.append(self.get_spec(account))
             else:
-                failed_accounts.append(self.get_spec(a))
+                failed_accounts.append(self.get_spec(account))
         fails = len(failed_accounts)
 
         if fails:
-            if len(accounts) == 1:
+            if len(tasks) == 1:
                 logger.error(f"保活失败: {', '.join(failed_accounts)}")
             else:
                 logger.error(f"保活失败 ({fails}/{len(tasks)}): {', '.join(failed_accounts)}")
             return ctx.finish(RunStatus.FAIL, f"保活失败")
-        if len(accounts) == 1:
-            logger.bind(log=True).info(f"保活成功: {', '.join(successful_accounts)}.")
+        if len(tasks) == 1:
+            logger.info(f"保活成功: {', '.join(successful_accounts)}.")
         else:
-            logger.bind(log=True).info(
-                f"保活成功 ({len(tasks)}/{len(tasks)}): {', '.join(successful_accounts)}."
-            )
+            logger.info(f"保活成功 ({len(tasks)}/{len(tasks)}): {', '.join(successful_accounts)}.")
         return ctx.finish(RunStatus.SUCCESS, f"保活成功")
 
     async def run_all(self, instant: bool = False):

@@ -472,7 +472,7 @@ class ConfigManager(ProxyBase):
         c["account"] = 1
         c.add(
             comment(
-                "默认情况下, 日志推送将在每天指定时间统一推送 (在 @embykeeper_bot 设置), 设置为 false 以立刻推送"
+                "默认情况下, 日志推送将由 @embykeeper_bot 按其设置统一推送, 设置为 true 以立刻推送"
             )
         )
         c["immediately"] = False
