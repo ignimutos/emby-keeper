@@ -338,3 +338,4 @@ docs/.vitepress/cache
 .gitnexus
 .firecrawl/
 .worktrees/
+/.claude/worktrees/
