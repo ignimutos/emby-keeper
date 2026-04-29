@@ -1,15 +1,13 @@
-FROM python:3.8 AS builder
+FROM python:3.13 AS builder
 
 WORKDIR /src
 COPY . .
 
-RUN python -m venv /opt/venv \
-    && . /opt/venv/bin/activate \
-    && pip install --no-cache-dir -U pip setuptools wheel \
-    && pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir -U pip uv \
+    && uv sync --locked --no-dev --no-editable
 
-FROM python:3.8-slim
-COPY --from=builder /opt/venv /opt/venv
+FROM python:3.13-slim
+COPY --from=builder /src/.venv /opt/venv
 COPY --from=builder /src/scripts/docker-entrypoint.sh /entrypoint.sh
 
 ENV TZ="Asia/Shanghai"

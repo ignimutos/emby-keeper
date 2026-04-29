@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "embykeeper"
 version = "7.6.1"
 authors = [
-    {name = "jackzzs", email = "jackzzs@outlook.com"},
+    { name = "jackzzs", email = "jackzzs@outlook.com" },
 ]
 description = "Daily checkin automator for emby bots in telegram."
+license = "GPL-3.0-only"
 keywords = [
     "emby",
     "telegram",
@@ -24,17 +25,63 @@ classifiers = [
     "Environment :: Web Environment",
     "Intended Audience :: End Users/Desktop",
     "Natural Language :: Chinese (Simplified)",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-requires-python = ">=3.8"
-dynamic = ["dependencies"]
+requires-python = ">=3.10"
+dependencies = [
+    "aiofiles",
+    "aiocache",
+    "apprise",
+    "appdirs",
+    "cachetools",
+    "cryptography",
+    "curl_cffi",
+    "ddddocrfix>=1.5.5",
+    "emoji",
+    "eventlet",
+    "faker",
+    "fastapi",
+    "flask>=3.0.3",
+    "flask-login>=0.6.3",
+    "flask-socketio>=5.3.6",
+    "httpx[http2]",
+    "kurigram>=2.2.12",
+    "loguru",
+    "numpy<2.0.0",
+    "pillow>10.0.0",
+    "psutil",
+    "pydantic",
+    "pymongo",
+    "python-dateutil",
+    "python-socks[asyncio]",
+    "pyyaml",
+    "rich",
+    "simple-websocket",
+    "socksio",
+    "telethon",
+    "tgcrypto",
+    "thefuzz[speedup]",
+    "tomli",
+    "tomlkit",
+    "typer",
+    "uvicorn[standard]",
+    "watchfiles",
+    "werkzeug>=3.0.3",
+    "xpinyin",
+]
+
+[dependency-groups]
+dev = [
+    "black>=25.9.0",
+    "bump2version>=1.0.1",
+    "debugpy>=1.8.17",
+    "pre-commit>=4.3.0",
+    "pytest>=8.4.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/emby-keeper/emby-keeper"
@@ -50,11 +97,8 @@ embykeeperweb = "embykeeperweb.app:cli"
 [tool.setuptools]
 zip-safe = false
 
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
-
 [tool.setuptools.packages]
-find = {namespaces = false}
+find = { namespaces = false }
 
 [tool.black]
 line-length = 110

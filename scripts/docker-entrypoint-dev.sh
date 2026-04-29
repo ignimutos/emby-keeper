@@ -7,7 +7,13 @@ if [ -d "/src" ]; then
         cp -rT /build /src
     fi
     echo ">> 正在根据源码配置程序, 请稍候."
-    pip install --no-cache-dir -e /src
+    cd /src
+    sync_stamp="/src/.venv/.sync-stamp"
+    if [ ! -f "$sync_stamp" ] || [ "/src/pyproject.toml" -nt "$sync_stamp" ] || [ "/src/uv.lock" -nt "$sync_stamp" ]; then
+        uv sync --locked
+        touch "$sync_stamp"
+    fi
+    export PATH="/src/.venv/bin:$PATH"
     echo ">> 已配置完成."
     echo
 else

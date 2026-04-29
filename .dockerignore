@@ -12,6 +12,7 @@
 /tests
 
 # Venvs
+/.venv
 /venv
 /conda
 
@@ -41,7 +42,6 @@
 /.editorconfig
 /Makefile
 /tox.ini
-/requirements_dev.txt
 
 # Vscode
 .vscode

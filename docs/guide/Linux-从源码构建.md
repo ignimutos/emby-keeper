@@ -2,11 +2,13 @@
 
 ## 配置与部署
 
-Embykeeper 可以从源码构建, 首先请拉取并设置环境:
+Embykeeper 可以从源码构建, 请先安装 [uv](https://docs.astral.sh/uv/), 然后拉取并设置环境:
 
 ```bash
 git clone https://github.com/emby-keeper/emby-keeper.git
-make install && make run
+cd emby-keeper
+make install
+make run
 ```
 
 命令将会在 `embykeeper` 目录下生成模板 `config.toml` 文件 (您也可以从[这里](https://github.com/emby-keeper/emby-keeper/blob/main/config.example.toml)下载).
@@ -45,7 +47,7 @@ make systemd
 
 当您需要更新版本时, 您需要执行:
 
-```
+```bash
 git pull
 ```
 
