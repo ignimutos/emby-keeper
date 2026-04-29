@@ -4,10 +4,12 @@ WORKDIR /src
 COPY . .
 
 RUN python -m pip install --no-cache-dir -U pip uv \
-    && uv sync --locked --no-dev --no-editable
+    && uv venv /opt/venv \
+    && . /opt/venv/bin/activate \
+    && uv sync --active --locked --no-dev --no-editable
 
 FROM python:3.13-slim
-COPY --from=builder /src/.venv /opt/venv
+COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /src/scripts/docker-entrypoint.sh /entrypoint.sh
 
 ENV TZ="Asia/Shanghai"
