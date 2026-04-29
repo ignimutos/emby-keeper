@@ -123,9 +123,7 @@ class EmbyManager:
         if not unified_accounts:
             return None
 
-        on_next_time = lambda t: logger.info(
-            f"下一次 Emby 保活将在 {t.strftime('%m-%d %H:%M %p')} 进行."
-        )
+        on_next_time = lambda t: logger.info(f"下一次 Emby 保活将在 {t.strftime('%m-%d %H:%M %p')} 进行.")
 
         def func(ctx: RunContext):
             task = self._tasks["unified"] = asyncio.create_task(self._watch_main(unified_accounts, False))

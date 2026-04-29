@@ -470,11 +470,7 @@ class ConfigManager(ProxyBase):
         c["enabled"] = True
         c.add(comment("使用第几个 Telegram 账号进行推送, 从 1 开始计数:"))
         c["account"] = 1
-        c.add(
-            comment(
-                "默认情况下, 日志推送将由 @embykeeper_bot 按其设置统一推送, 设置为 true 以立刻推送"
-            )
-        )
+        c.add(comment("默认情况下, 日志推送将由 @embykeeper_bot 按其设置统一推送, 设置为 true 以立刻推送"))
         c["immediately"] = False
         c.add(comment("默认情况下, 启动时立刻执行的一次签到/保活不会推送消息, 设置为 true 以推送"))
         c["once"] = False

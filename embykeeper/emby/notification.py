@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-
 FALLBACK_ITEM = "未获取"
 FALLBACK_UPDATE = "未更新"
 FALLBACK_NEXT_TIME = "未计划"
@@ -78,7 +77,5 @@ def format_watch_notification(result: EmbyWatchResult) -> str:
     if not result.success:
         lines.append(f"失败阶段: {result.failure_stage or '未说明'}")
 
-    lines.append(
-        f"下次保活: {_format_datetime(result.next_time, FALLBACK_NEXT_TIME, with_seconds=False)}"
-    )
+    lines.append(f"下次保活: {_format_datetime(result.next_time, FALLBACK_NEXT_TIME, with_seconds=False)}")
     return "\n".join(lines)

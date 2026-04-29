@@ -267,7 +267,9 @@ def test_watch_main_sends_one_notify_per_account(monkeypatch):
             self.account = account
             self.user_id = "uid"
             self.items = {}
-            self.log = SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None)
+            self.log = SimpleNamespace(
+                info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None
+            )
 
         async def get_item(self, play_id):
             return {"Id": play_id, "Name": "片名"}
@@ -283,7 +285,9 @@ def test_watch_main_sends_one_notify_per_account(monkeypatch):
     monkeypatch.setattr("embykeeper.emby.main.logger", stub)
     monkeypatch.setattr("embykeeper.emby.main.config", fake_config)
     monkeypatch.setattr("embykeeper.emby.main.Emby", FakeEmby)
-    monkeypatch.setattr("embykeeper.emby.main.RunContext", SimpleNamespace(prepare=lambda **_kwargs: DummyRunContext()))
+    monkeypatch.setattr(
+        "embykeeper.emby.main.RunContext", SimpleNamespace(prepare=lambda **_kwargs: DummyRunContext())
+    )
     monkeypatch.setattr("embykeeper.emby.main.asyncio.sleep", AsyncMock())
     monkeypatch.setattr("embykeeper.emby.main.random.uniform", lambda *_args: 0)
 
