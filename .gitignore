@@ -336,3 +336,5 @@ docs/.vitepress/cache
 
 *.fish
 .gitnexus
+.firecrawl/
+.worktrees/

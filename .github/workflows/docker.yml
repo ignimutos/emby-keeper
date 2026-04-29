@@ -2,6 +2,9 @@ name: Docker Image Publish
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 'main'
   release:
     types: [released]
 
@@ -111,6 +114,7 @@ jobs:
           docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
 
   sync-to-hf:
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     needs:
       - merge
