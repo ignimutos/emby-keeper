@@ -340,3 +340,4 @@ docs/.vitepress/cache
 .worktrees/
 /.claude/worktrees/
 docs/superpowers
+runtime/
