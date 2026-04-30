@@ -339,3 +339,4 @@ docs/.vitepress/cache
 .firecrawl/
 .worktrees/
 /.claude/worktrees/
+docs/superpowers
