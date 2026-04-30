@@ -17,6 +17,47 @@ handler_msg_id = None
 change_handle_telegram = None
 change_handle_notifier = None
 
+_instant_notification_window_active = False
+_allow_instant_notification_window = True
+
+
+def set_instant_notification_window(active: bool, *, allow: bool):
+    global _instant_notification_window_active, _allow_instant_notification_window
+    _instant_notification_window_active = active
+    _allow_instant_notification_window = allow
+
+
+def clear_instant_notification_window():
+    global _instant_notification_window_active, _allow_instant_notification_window
+    _instant_notification_window_active = False
+    _allow_instant_notification_window = True
+
+
+def _instant_notification_blocked() -> bool:
+    return _instant_notification_window_active and (not _allow_instant_notification_window)
+
+
+def should_notify_log(record):
+    if _instant_notification_blocked():
+        return False
+    notify = record.get("extra", {}).get("log", None)
+    nonotify = record.get("extra", {}).get("nonotify", None)
+    if (not nonotify) and (notify or record["level"].no == logging.ERROR):
+        return True
+    else:
+        return False
+
+
+def should_notify_msg(record):
+    if _instant_notification_blocked():
+        return False
+    notify = record.get("extra", {}).get("msg", None)
+    nonotify = record.get("extra", {}).get("nonotify", None)
+    if (not nonotify) and notify:
+        return True
+    else:
+        return False
+
 
 async def _stop_notifier():
     global stream_log, stream_msg, handler_log_id, handler_msg_id
@@ -56,22 +97,6 @@ async def start_notifier():
     """消息通知初始化函数."""
     global stream_log, stream_msg, handler_log_id, handler_msg_id, change_handle_telegram, change_handle_notifier
 
-    def _filter_log(record):
-        notify = record.get("extra", {}).get("log", None)
-        nonotify = record.get("extra", {}).get("nonotify", None)
-        if (not nonotify) and (notify or record["level"].no == logging.ERROR):
-            return True
-        else:
-            return False
-
-    def _filter_msg(record):
-        notify = record.get("extra", {}).get("msg", None)
-        nonotify = record.get("extra", {}).get("nonotify", None)
-        if (not nonotify) and notify:
-            return True
-        else:
-            return False
-
     def _formatter(record):
         return "{level}#" + formatter(record)
 
@@ -91,14 +116,14 @@ async def start_notifier():
         handler_log_id = logger.add(
             stream_log,
             format=_formatter,
-            filter=_filter_log,
+            filter=should_notify_log,
             enqueue=True,
         )
         stream_msg = AppriseStream(uri=notifier.apprise_uri)
         handler_msg_id = logger.add(
             stream_msg,
             format=_formatter,
-            filter=_filter_msg,
+            filter=should_notify_msg,
             enqueue=True,
         )
         if not change_handle_notifier:
@@ -138,7 +163,7 @@ async def start_notifier():
         handler_log_id = logger.add(
             stream_log,
             format=_formatter,
-            filter=_filter_log,
+            filter=should_notify_log,
         )
         stream_msg = TelegramStream(
             account=account,
@@ -147,7 +172,7 @@ async def start_notifier():
         handler_msg_id = logger.add(
             stream_msg,
             format=_formatter,
-            filter=_filter_msg,
+            filter=should_notify_msg,
         )
         if not change_handle_telegram:
             change_handle_telegram = config.on_change("telegram.account", _handle_config_change)

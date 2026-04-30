@@ -8,6 +8,7 @@ from typing import Iterable, List, Union, Optional
 import re
 
 from loguru import logger
+from curl_cffi import CurlHttpVersion
 from curl_cffi.requests import AsyncSession, Response, RequestsError
 from pydantic import BaseModel, ValidationError
 
@@ -229,12 +230,12 @@ class Emby:
             headers["X-Emby-Token"] = self.token
         return headers
 
-    def _get_session(self) -> AsyncSession:
+    def _get_session(self, **overrides) -> AsyncSession:
         cookies = {}
         if self.cf_clearance:
             cookies["cf_clearance"] = self.cf_clearance
 
-        return AsyncSession(
+        session_kwargs = dict(
             verify=False,
             headers=self.build_headers(),
             cookies=cookies,
@@ -244,8 +245,19 @@ class Emby:
             allow_redirects=True,
             default_headers=False,
         )
+        session_kwargs.update(overrides)
+        return AsyncSession(**session_kwargs)
 
-    async def _request(self, method: str, path: str, _login=False, **kw) -> Response:
+    def _format_connect_error(self, error: Exception, url: str) -> str:
+        error_msg = re.sub(r"\s+See\s+.*?\s+first for more details\.\.?", "", str(error))
+        if "TLSV1_ALERT_UNRECOGNIZED_NAME" in error_msg:
+            return (
+                f"{error_msg} "
+                f'请检查服务器地址 "{url}" 的主机名是否与证书、SNI 或反向代理配置匹配.'
+            )
+        return error_msg
+
+    async def _request(self, method: str, path: str, _login=False, _session_kwargs=None, **kw) -> Response:
 
         if path.startswith(("http://", "https://")):
             url = path
@@ -254,9 +266,10 @@ class Emby:
             url = f"{base_url}/{path.lstrip('/')}"
 
         last_err = None
+        session_kwargs = _session_kwargs or {}
         for _ in range(3):
             try:
-                async with self._get_session() as session:
+                async with self._get_session(**session_kwargs) as session:
                     resp: Response = await session.request(method, url, **kw)
                     if resp.status_code == 401 and self.a.username and not _login:
                         if not await self.login():
@@ -281,10 +294,39 @@ class Emby:
                 await asyncio.sleep(random.random() + 0.5)
 
         if last_err:
-            error_msg = re.sub(r"\s+See\s+.*?\s+first for more details\.\.?", "", str(last_err))
-            raise EmbyConnectError(f"{last_err.__class__.__name__}: {error_msg}")
+            raise EmbyConnectError(
+                f"{last_err.__class__.__name__}: {self._format_connect_error(last_err, url)}"
+            )
         else:
             raise EmbyConnectError(f'连接到 "{url}" 重试超限')
+
+    def _is_http2_flow_control_error(self, error: Exception) -> bool:
+        message = str(error)
+        return "nghttp2_submit_window_update()" in message or "Flow control error" in message
+
+    async def _open_stream_with_fallback(self, url: str, length: int, play_session_id: str):
+        request_kwargs = dict(
+            method="GET",
+            path=url,
+            stream=True,
+            max_recv_speed=1024,
+            timeout=None,
+            headers={
+                "Range": f"bytes={length}-",
+                "User-Agent": "VLC/3.0.21 LibVLC/3.0.21",
+                "X-Playback-Session-Id": play_session_id,
+            },
+        )
+        try:
+            return await self._request(**request_kwargs)
+        except EmbyConnectError as error:
+            if not self._is_http2_flow_control_error(error):
+                raise
+            self.log.warning("流媒体文件访问触发 HTTP/2 兼容问题, 正在回退到 HTTP/1.1.")
+            return await self._request(
+                **request_kwargs,
+                _session_kwargs={"http_version": CurlHttpVersion.V1_1},
+            )
 
     async def use_cfsolver(self):
         from embykeeper.cloudflare import get_cf_clearance
@@ -582,18 +624,7 @@ class Emby:
             length = 0
             last_err_time = datetime.now()
             while True:
-                resp = await self._request(
-                    method="GET",
-                    path=url,
-                    stream=True,
-                    max_recv_speed=1024,
-                    timeout=None,
-                    headers={
-                        "Range": f"bytes={length}-",
-                        "User-Agent": "VLC/3.0.21 LibVLC/3.0.21",
-                        "X-Playback-Session-Id": play_session_id,
-                    },
-                )
+                resp = await self._open_stream_with_fallback(url, length, play_session_id)
                 try:
                     async for i in resp.aiter_content(chunk_size=1024):
                         length += len(i)

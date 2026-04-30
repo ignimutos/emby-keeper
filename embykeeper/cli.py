@@ -101,6 +101,16 @@ def print_help(ctx: typer.Context, param: typer.CallbackParam, value: bool):
     raise typer.Exit()
 
 
+def _notifier_should_start(*, instant: bool, once: bool) -> bool:
+    notifier = config.notifier
+    return bool(notifier and notifier.enabled and ((not once) or config.noexit or (instant and notifier.once)))
+
+
+def _instant_notifications_allowed(*, instant: bool) -> bool:
+    notifier = config.notifier
+    return bool(instant and notifier and notifier.enabled and notifier.once)
+
+
 @app.async_command(
     help=(
         f"欢迎使用 [orange3]{__product__.capitalize()}[/] {__version__} " ":cinema: 无参数默认开启全部功能."
@@ -530,19 +540,30 @@ async def main(
                 logger.error("注册管理器未初始化")
             return
 
-        if instant and not debug_cron:
-            if checkin_man:
-                pool.add(checkin_man.run_all(instant=True), "站点签到")
-            if emby_man:
-                pool.add(emby_man.run_all(instant=True), "Emby 保活")
-            if subsonic_man:
-                pool.add(subsonic_man.run_all(instant=True), "Subsonic 保活")
-            await pool.wait()
-            logger.debug("启动时立刻执行签到和保活: 已完成.")
-        if (not once) or config.noexit:
-            from .notify import start_notifier
+        streams = None
+        allow_instant_notifications = _instant_notifications_allowed(instant=instant)
+        should_start_notifier = _notifier_should_start(instant=instant, once=once)
+        if should_start_notifier:
+            from .notify import clear_instant_notification_window, set_instant_notification_window, start_notifier
 
             streams = await start_notifier()
+        else:
+            from .notify import clear_instant_notification_window, set_instant_notification_window
+
+        if instant and not debug_cron:
+            if should_start_notifier:
+                set_instant_notification_window(True, allow=allow_instant_notifications)
+            try:
+                if checkin_man:
+                    pool.add(checkin_man.run_all(instant=True), "站点签到")
+                if emby_man:
+                    pool.add(emby_man.run_all(instant=True), "Emby 保活")
+                if subsonic_man:
+                    pool.add(subsonic_man.run_all(instant=True), "Subsonic 保活")
+                await pool.wait()
+            finally:
+                clear_instant_notification_window()
+            logger.debug("启动时立刻执行签到和保活: 已完成.")
         if not once:
             if checkin_man:
                 pool.add(checkin_man.schedule_all(), "站点签到")
