@@ -302,12 +302,19 @@ class Emby:
             return url
 
         api_base_url = self._get_api_base_url().rstrip("/")
-        parsed_api_base = urlparse(api_base_url)
-        api_root = f"{parsed_api_base.scheme}://{parsed_api_base.netloc}"
-        api_path = parsed_api_base.path.rstrip("/")
-        if url.startswith(api_path + "/"):
-            return f"{api_root}{url}"
-        return f"{api_base_url}/{url.lstrip('/')}"
+        api_path = urlparse(api_base_url).path.rstrip("/")
+        account_path = urlparse(str(self.a.url).rstrip("/")).path.rstrip("/")
+        server_path = account_path.removesuffix("/emby")
+
+        parsed_url = urlparse(url)
+        stream_path = parsed_url.path or url
+        for prefix in (api_path, server_path, "/emby"):
+            if prefix and prefix != "/" and stream_path.startswith(prefix + "/"):
+                stream_path = stream_path[len(prefix) :]
+                break
+
+        normalized_url = parsed_url._replace(path=stream_path).geturl()
+        return f"{api_base_url}/{normalized_url.lstrip('/')}"
 
     async def _request(self, method: str, path: str, _login=False, _session_kwargs=None, **kw) -> Response:
 

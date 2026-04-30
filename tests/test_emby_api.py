@@ -370,13 +370,13 @@ def test_resolve_stream_url_uses_emby_api_base_for_root_video_paths():
     assert url == "https://example.com/myg/emby/videos/123/stream.mkv?Static=true"
 
 
-def test_resolve_stream_url_preserves_server_relative_subpaths_under_emby_api_base():
+def test_resolve_stream_url_strips_configured_subpath_before_joining_api_base():
     account = EmbyAccount(url="https://example.com/myg", username="user", password="pass")
     client = Emby(account)
 
     url = client._resolve_stream_url("/myg/videos/123/stream.mkv?Static=true")
 
-    assert url == "https://example.com/myg/emby/myg/videos/123/stream.mkv?Static=true"
+    assert url == "https://example.com/myg/emby/videos/123/stream.mkv?Static=true"
 
 
 def test_resolve_stream_url_does_not_duplicate_existing_emby_prefix():
