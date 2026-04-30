@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from embykeeper.emby.api import Emby, EmbyPlayError
+from curl_cffi import CurlHttpVersion
+from curl_cffi.requests import RequestsError
+
+from embykeeper.emby.api import Emby, EmbyConnectError, EmbyPlayError
 from embykeeper.emby.notification import EmbyWatchResult
 from embykeeper.schema import EmbyAccount
 
@@ -38,6 +41,71 @@ def test_request_preserves_base_path_in_account_url():
     asyncio.run(client._request("GET", "/Users/AuthenticateByName", _login=True))
 
     assert session.requested_url.endswith("/emby/Users/AuthenticateByName")
+
+
+def test_request_passes_http_version_override_to_session():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    recorded = {}
+
+    class RecordingSession(FakeSession):
+        async def request(self, method, url, **kwargs):
+            recorded["request_kwargs"] = kwargs
+            return await super().request(method, url, **kwargs)
+
+    def build_session(**session_kwargs):
+        recorded["session_kwargs"] = session_kwargs
+        return RecordingSession()
+
+    client._get_session = build_session
+
+    asyncio.run(
+        client._request(
+            "GET",
+            "/Users/AuthenticateByName",
+            _login=True,
+            _session_kwargs={"http_version": CurlHttpVersion.V1_1},
+        )
+    )
+
+    assert recorded["session_kwargs"]["http_version"] == CurlHttpVersion.V1_1
+
+
+def test_format_connect_error_explains_unrecognized_name():
+    account = EmbyAccount(url="https://bad-host.example.com", username="user", password="pass")
+    client = Emby(account)
+
+    message = client._format_connect_error(
+        RequestsError(
+            "Failed to perform, curl: (35) TLS connect error: error:10000458:SSL routines:OPENSSL_internal:TLSV1_ALERT_UNRECOGNIZED_NAME.."
+        ),
+        "https://bad-host.example.com",
+    )
+
+    assert "SNI" in message
+    assert "证书" in message
+    assert "bad-host.example.com" in message
+
+
+def test_open_stream_with_fallback_retries_http11_after_flow_control_error(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    calls = []
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        calls.append(_session_kwargs)
+        if len(calls) == 1:
+            raise EmbyConnectError(
+                "RequestException: Failed to perform, curl: (16) [1] nghttp2_submit_window_update() failed: Flow control error(-524)."
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    response = asyncio.run(client._open_stream_with_fallback("/Videos/abc/stream", 0, "play-session"))
+
+    assert response.ok is True
+    assert calls == [None, {"http_version": CurlHttpVersion.V1_1}]
 
 
 def test_watch_returns_success_result_when_userdata_changes(monkeypatch):

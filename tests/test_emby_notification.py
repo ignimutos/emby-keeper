@@ -3,6 +3,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from embykeeper.notify import (
+    clear_instant_notification_window,
+    set_instant_notification_window,
+    should_notify_log,
+    should_notify_msg,
+)
 from embykeeper.emby.main import EmbyManager
 from embykeeper.emby.notification import (
     EmbyPlaybackSnapshot,
@@ -11,6 +17,30 @@ from embykeeper.emby.notification import (
     has_userdata_update,
 )
 from embykeeper.schema import EmbyAccount
+
+
+def make_record(level_no=20, **extra):
+    return {"level": SimpleNamespace(no=level_no), "extra": extra}
+
+
+def test_notify_filters_suppress_instant_window_when_once_disabled():
+    set_instant_notification_window(True, allow=False)
+    try:
+        assert should_notify_log(make_record(log=True)) is False
+        assert should_notify_msg(make_record(msg=True)) is False
+        assert should_notify_log(make_record(level_no=40)) is False
+    finally:
+        clear_instant_notification_window()
+
+
+def test_notify_filters_allow_instant_window_when_once_enabled():
+    set_instant_notification_window(True, allow=True)
+    try:
+        assert should_notify_log(make_record(log=True)) is True
+        assert should_notify_msg(make_record(msg=True)) is True
+        assert should_notify_log(make_record(level_no=40)) is True
+    finally:
+        clear_instant_notification_window()
 
 
 def test_format_watch_notification_success():
