@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from curl_cffi import CurlHttpVersion
 from curl_cffi.requests import RequestsError
 
+import embykeeper.emby.api as emby_api_module
 from embykeeper.emby.api import Emby, EmbyConnectError, EmbyPlayError
 from embykeeper.emby.notification import EmbyWatchResult
 from embykeeper.schema import EmbyAccount
@@ -16,25 +17,19 @@ class FakeResponse:
     ok = True
     text = ""
 
+    def json(self):
+        return {}
+
 
 class FakeJsonResponse(FakeResponse):
-    def __init__(self, payload=None):
-        self.payload = payload or {}
+    def __init__(self, payload=None, status_code=200):
+        self._payload = payload or {}
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+        self.text = ""
 
     def json(self):
-        return self.payload
-
-
-class FakeStreamResponse(FakeResponse):
-    def __init__(self, chunks=None):
-        self.chunks = chunks or []
-
-    async def aiter_content(self, chunk_size=1024):
-        for chunk in self.chunks:
-            yield chunk
-
-    async def aclose(self):
-        return None
+        return self._payload
 
 
 class FakeSession:
@@ -52,26 +47,56 @@ class FakeSession:
         return FakeResponse()
 
 
-def test_request_preserves_base_path_in_account_url():
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
+class FakeStreamResponse(FakeResponse):
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.closed = False
+
+    async def aiter_content(self, chunk_size=1024):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
+
+
+def patch_cache(monkeypatch, store=None):
+    store = dict(store or {})
+
+    class FakeCache:
+        def get(self, key, default=None):
+            return store.get(key, default)
+
+        def set(self, key, value):
+            store[key] = value
+
+        def delete(self, key):
+            store.pop(key, None)
+
+    monkeypatch.setattr(emby_api_module, "cache", FakeCache())
+    return store
+
+
+def test_request_appends_emby_api_base_to_public_account_url():
+    account = EmbyAccount(url="https://example.com/myg", username="user", password="pass")
     client = Emby(account)
     session = FakeSession()
     client._get_session = lambda: session
 
     asyncio.run(client._request("GET", "/Users/AuthenticateByName", _login=True))
 
-    assert session.requested_url.endswith("/emby/Users/AuthenticateByName")
+    assert session.requested_url.endswith("/myg/emby/Users/AuthenticateByName")
 
 
-def test_request_does_not_duplicate_account_base_path_for_direct_stream_path():
-    account = EmbyAccount(url="https://example.com/mogu", username="user", password="pass")
+def test_request_keeps_existing_emby_api_base_in_account_url():
+    account = EmbyAccount(url="https://example.com/myg/emby", username="user", password="pass")
     client = Emby(account)
     session = FakeSession()
     client._get_session = lambda: session
 
-    asyncio.run(client._request("GET", "/mogu/videos/591666/stream.strm", _login=True))
+    asyncio.run(client._request("GET", "/Users/AuthenticateByName", _login=True))
 
-    assert session.requested_url == "https://example.com/mogu/videos/591666/stream.strm"
+    assert session.requested_url.endswith("/myg/emby/Users/AuthenticateByName")
 
 
 def test_request_passes_http_version_override_to_session():
@@ -118,9 +143,54 @@ def test_format_connect_error_explains_unrecognized_name():
     assert "bad-host.example.com" in message
 
 
-def test_open_stream_prefers_http11_on_first_attempt(monkeypatch):
+def test_get_fake_env_defaults_to_hills_android(monkeypatch):
     account = EmbyAccount(url="https://example.com", username="user", password="pass")
     client = Emby(account)
+    patch_cache(monkeypatch)
+
+    env = client.get_fake_env()
+
+    assert env.client == "Hills"
+    assert env.device == "PLC110"
+    assert env.client_version == "1.6.1"
+    assert env.useragent == "Hills/1.6.1 (android; 15)"
+    assert len(env.device_id) == 16
+
+
+def test_env_rebuilds_when_cached_default_client_is_legacy_fileball(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    patch_cache(
+        monkeypatch,
+        {
+            "emby.env.example.com.user": {
+                "client": "Fileball",
+                "device": "Mock Device",
+                "device_id": "device-id",
+                "client_version": "1.3.24",
+                "useragent": "Fileball/1.3.24",
+            }
+        },
+    )
+
+    env = client.env
+
+    assert env.client == "Hills"
+    assert env.device == "PLC110"
+    assert env.client_version == "1.6.1"
+    assert env.useragent == "Hills/1.6.1 (android; 15)"
+
+
+def test_open_stream_uses_http11_hills_android_headers(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._env = SimpleNamespace(
+        client="Hills",
+        device="PLC110",
+        device_id="dc92b1ddef2981c4",
+        client_version="1.6.1",
+        useragent="Hills/1.6.1 (android; 15)",
+    )
     calls = []
 
     async def fake_request(method, path, _session_kwargs=None, **kwargs):
@@ -132,532 +202,196 @@ def test_open_stream_prefers_http11_on_first_attempt(monkeypatch):
     response = asyncio.run(client._open_stream_with_fallback("/Videos/abc/stream", 0, "play-session"))
 
     assert response.ok is True
-    assert calls == [{"http_version": CurlHttpVersion.V1_1}]
+    assert calls == [
+        {
+            "headers": {
+                "User-Agent": "Hills/1.6.1 (android; 15)",
+                "Accept": "*/*",
+                "Range": "bytes=0-",
+            },
+            "http_version": CurlHttpVersion.V1_1,
+        }
+    ]
 
 
-def test_play_uses_canonical_stream_url_with_latest_playback_session(monkeypatch):
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
+def test_stream_media_stops_after_clean_eof(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    response = FakeStreamResponse([b"a" * 1024, b"b" * 104])
+    calls = []
+
+    async def fake_open(url, length, play_session_id):
+        calls.append((url, length, play_session_id))
+        return response
+
+    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0.5)
+
+    asyncio.run(client._stream_media("/Videos/abc/stream", "play-session"))
+
+    assert calls == [("/Videos/abc/stream", 0, "play-session")]
+    assert response.closed is True
+
+
+def test_resolve_stream_url_uses_emby_api_base_for_root_video_paths():
+    account = EmbyAccount(url="https://example.com/myg", username="user", password="pass")
+    client = Emby(account)
+
+    url = client._resolve_stream_url("/videos/123/stream.mkv?Static=true")
+
+    assert url == "https://example.com/myg/emby/videos/123/stream.mkv?Static=true"
+
+
+def test_resolve_stream_url_preserves_server_relative_subpaths_under_emby_api_base():
+    account = EmbyAccount(url="https://example.com/myg", username="user", password="pass")
+    client = Emby(account)
+
+    url = client._resolve_stream_url("/myg/videos/123/stream.mkv?Static=true")
+
+    assert url == "https://example.com/myg/emby/myg/videos/123/stream.mkv?Static=true"
+
+
+def test_resolve_stream_url_does_not_duplicate_existing_emby_prefix():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+
+    url = client._resolve_stream_url("/emby/videos/123/stream.mkv?Static=true")
+
+    assert url == "https://example.com/emby/videos/123/stream.mkv?Static=true"
+
+
+def test_play_uses_single_hills_android_playback_info_request(monkeypatch):
+    account = EmbyAccount(url="https://example.com/myg", username="user", password="pass")
     client = Emby(account)
     client._user_id = "user-id"
-    item = {"Id": "abc123", "Name": "片名", "RunTimeTicks": 100000000}
-    latest_stream_url = "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true"
-    canonical_stream_url = (
-        "/Videos/abc123/stream?MediaSourceId=media-1&PlaySessionId=play-session-live&Static=true"
+    client._token = "token"
+    client._env = SimpleNamespace(
+        client="Hills",
+        device="PLC110",
+        device_id="dc92b1ddef2981c4",
+        client_version="1.6.1",
+        useragent="Hills/1.6.1 (android; 15)",
     )
-    stream_calls = []
-    session_payloads = []
-    playback_info_responses = iter(
-        [
-            {
-                "PlaySessionId": "play-session-initial",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-buffering",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false&AudioStreamIndex=1",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [{"Id": "media-1", "DirectStreamUrl": latest_stream_url}],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [{"Id": "media-1", "DirectStreamUrl": latest_stream_url}],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [{"Id": "media-1", "DirectStreamUrl": latest_stream_url}],
-            },
-        ]
-    )
+    calls = []
+
+    class DummyTask:
+        def cancel(self):
+            pass
+
+        def __await__(self):
+            async def _cancelled():
+                raise asyncio.CancelledError
+
+            return _cancelled().__await__()
+
+    def fake_create_task(coro):
+        coro.close()
+        return DummyTask()
 
     async def fake_request(method, path, _session_kwargs=None, **kwargs):
-        if path == "/Videos/abc123/AdditionalParts":
-            return FakeJsonResponse({})
-        if path == "/Items/abc123/PlaybackInfo":
-            return FakeJsonResponse(next(playback_info_responses))
-        if path == "/Sessions/Playing":
-            session_payloads.append(kwargs["json"])
-            return FakeJsonResponse({})
-        if path in {"/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"}:
-            return FakeJsonResponse({})
-        raise AssertionError(path)
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "params": kwargs.get("params"),
+                "json": kwargs.get("json"),
+                "headers": kwargs.get("headers"),
+            }
+        )
+        if path.endswith("/AdditionalParts"):
+            return FakeJsonResponse({"Items": []})
+        if path.endswith("/PlaybackInfo"):
+            return FakeJsonResponse(
+                {
+                    "PlaySessionId": "play-session-id",
+                    "MediaSources": [
+                        {
+                            "Id": "media-source-id",
+                            "DirectStreamUrl": "/myg/videos/123/stream.mkv?Static=true",
+                        }
+                    ],
+                }
+            )
+        return FakeJsonResponse({})
 
-    async def fake_open_stream_with_fallback(url, length, play_session_id):
-        stream_calls.append((url, play_session_id))
-        raise EmbyConnectError("boom")
+    def fake_uniform(a, b):
+        if (a, b) == (0.95, 1.0):
+            return 0.95
+        return 0
 
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(*_args, **_kwargs):
-        await real_sleep(0)
-
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.create_task", fake_create_task)
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", fake_uniform)
     monkeypatch.setattr(client, "_request", fake_request)
-    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open_stream_with_fallback)
-    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: 0)
-    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
 
-    assert asyncio.run(client.play(item, time=1)) is True
-    assert stream_calls[0] == (canonical_stream_url, "play-session-live")
-    assert session_payloads[0]["PlaySessionId"] == "play-session-live"
+    item = {
+        "Id": "123",
+        "Name": "片名",
+        "UserData": {"PlaybackPositionTicks": 5400000000},
+    }
+    assert asyncio.run(client.play(item, time=10)) is True
 
+    playback_info_calls = [call for call in calls if call["path"].endswith("/PlaybackInfo")]
+    assert len(playback_info_calls) == 1
+    assert playback_info_calls[0]["params"] == {
+        "UserId": "user-id",
+        "IsPlayback": "true",
+        "X-Emby-Authorization": 'Emby Client="Hills", Device="PLC110", DeviceId="dc92b1ddef2981c4", Version="1.6.1"',
+        "X-Emby-Client": "Hills",
+        "X-Emby-Device-Name": "PLC110",
+        "X-Emby-Device-Id": "dc92b1ddef2981c4",
+        "X-Emby-Client-Version": "1.6.1",
+        "X-Emby-Language": "zh-cn",
+        "X-Emby-Token": "token",
+    }
+    profile = playback_info_calls[0]["json"]["DeviceProfile"]
+    assert "CodecProfiles" not in profile
+    assert profile["MaxStaticBitrate"] == 200000000
+    assert profile["MaxStreamingBitrate"] == 200000000
+    assert profile["DirectPlayProfiles"] == [{"Type": "Video"}, {"Type": "Audio"}]
 
-def test_play_stops_reopening_stream_after_clean_eof(monkeypatch):
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
-    client = Emby(account)
-    client._user_id = "user-id"
-    item = {"Id": "abc123", "Name": "片名", "RunTimeTicks": 100000000}
-    open_calls = []
-    playback_info_responses = iter(
-        [
-            {
-                "PlaySessionId": "play-session-initial",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-buffering",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false&AudioStreamIndex=1",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-        ]
-    )
+    session_params = {
+        "reqformat": "json",
+        "UserId": "user-id",
+        "X-Emby-Authorization": 'Emby Client="Hills", Device="PLC110", DeviceId="dc92b1ddef2981c4", Version="1.6.1"',
+        "X-Emby-Client": "Hills",
+        "X-Emby-Device-Name": "PLC110",
+        "X-Emby-Device-Id": "dc92b1ddef2981c4",
+        "X-Emby-Client-Version": "1.6.1",
+        "X-Emby-Language": "zh-cn",
+        "X-Emby-Token": "token",
+    }
+    playing_call = next(call for call in calls if call["path"] == "/Sessions/Playing")
+    assert playing_call["params"] == session_params
+    assert playing_call["headers"] == {"Content-Type": "text/plain"}
+    assert playing_call["json"]["PositionTicks"] == 5400000000
+    assert playing_call["json"]["AudioStreamIndex"] == 0
 
-    async def fake_request(method, path, _session_kwargs=None, **kwargs):
-        if path == "/Videos/abc123/AdditionalParts":
-            return FakeJsonResponse({})
-        if path == "/Items/abc123/PlaybackInfo":
-            return FakeJsonResponse(next(playback_info_responses))
-        if path in {"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"}:
-            return FakeJsonResponse({})
-        raise AssertionError(path)
+    progress_calls = [call for call in calls if call["path"] == "/Sessions/Playing/Progress"]
+    assert [call["json"]["EventName"] for call in progress_calls] == [
+        "TimeUpdate",
+        "Pause",
+        "Unpause",
+        "TimeUpdate",
+        "Pause",
+    ]
+    assert [call["json"]["PositionTicks"] for call in progress_calls] == [
+        5400000000,
+        5400000000,
+        5400000000,
+        5500000000,
+        5500000000,
+    ]
+    assert all(call["params"] == session_params for call in progress_calls)
+    assert all(call["headers"] == {"Content-Type": "text/plain"} for call in progress_calls)
+    assert all(call["json"]["AudioStreamIndex"] == 0 for call in progress_calls)
 
-    async def fake_open_stream_with_fallback(url, length, play_session_id):
-        open_calls.append((url, length, play_session_id))
-        return FakeStreamResponse([b"chunk"])
-
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(*_args, **_kwargs):
-        await real_sleep(0)
-
-    monkeypatch.setattr(client, "_request", fake_request)
-    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open_stream_with_fallback)
-    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: 0)
-    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
-
-    assert asyncio.run(client.play(item, time=1)) is True
-    assert len(open_calls) == 1
-
-
-def test_play_uses_stable_zero_playback_start_ticks(monkeypatch):
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
-    client = Emby(account)
-    client._user_id = "user-id"
-    item = {"Id": "abc123", "Name": "片名", "RunTimeTicks": 300000000}
-    session_requests = []
-    playback_info_responses = iter(
-        [
-            {
-                "PlaySessionId": "play-session-initial",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-        ]
-    )
-
-    async def fake_request(method, path, _session_kwargs=None, **kwargs):
-        if path == "/Videos/abc123/AdditionalParts":
-            return FakeJsonResponse({})
-        if path == "/Items/abc123/PlaybackInfo":
-            return FakeJsonResponse(next(playback_info_responses))
-        if path in {"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"}:
-            session_requests.append(kwargs["json"])
-            return FakeJsonResponse({})
-        raise AssertionError(path)
-
-    async def fake_open_stream_with_fallback(url, length, play_session_id):
-        return FakeStreamResponse([b"chunk"])
-
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(*_args, **_kwargs):
-        await real_sleep(0)
-
-    uniform_values = iter([0, 0, 0, 0, 0.95])
-
-    monkeypatch.setattr(client, "_request", fake_request)
-    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open_stream_with_fallback)
-    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: next(uniform_values))
-    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
-
-    assert asyncio.run(client.play(item, time=30)) is True
-    assert {payload["PlaybackStartTimeTicks"] for payload in session_requests} == {0}
-
-
-def test_play_uses_selected_audio_stream_index_from_playback_info(monkeypatch):
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
-    client = Emby(account)
-    client._user_id = "user-id"
-    item = {"Id": "abc123", "Name": "片名", "RunTimeTicks": 300000000}
-    session_requests = []
-    playback_info_responses = iter(
-        [
-            {
-                "PlaySessionId": "play-session-initial",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-        ]
-    )
-
-    async def fake_request(method, path, _session_kwargs=None, **kwargs):
-        if path == "/Videos/abc123/AdditionalParts":
-            return FakeJsonResponse({})
-        if path == "/Items/abc123/PlaybackInfo":
-            return FakeJsonResponse(next(playback_info_responses))
-        if path in {"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"}:
-            session_requests.append(kwargs["json"])
-            return FakeJsonResponse({})
-        raise AssertionError(path)
-
-    async def fake_open_stream_with_fallback(url, length, play_session_id):
-        return FakeStreamResponse([b"chunk"])
-
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(*_args, **_kwargs):
-        await real_sleep(0)
-
-    uniform_values = iter([0, 0, 0, 0, 0.95])
-
-    monkeypatch.setattr(client, "_request", fake_request)
-    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open_stream_with_fallback)
-    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: next(uniform_values))
-    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
-
-    assert asyncio.run(client.play(item, time=30)) is True
-    assert {payload["AudioStreamIndex"] for payload in session_requests} == {1}
-
-
-def test_play_sends_pause_before_stopped(monkeypatch):
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
-    client = Emby(account)
-    client._user_id = "user-id"
-    item = {"Id": "abc123", "Name": "片名", "RunTimeTicks": 300000000}
-    requests = []
-    playback_info_responses = iter(
-        [
-            {
-                "PlaySessionId": "play-session-initial",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=false&IsPlayback=false",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DefaultAudioStreamIndex": 1,
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AudioStreamIndex=1&AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-        ]
-    )
-
-    async def fake_request(method, path, _session_kwargs=None, **kwargs):
-        if path == "/Videos/abc123/AdditionalParts":
-            return FakeJsonResponse({})
-        if path == "/Items/abc123/PlaybackInfo":
-            return FakeJsonResponse(next(playback_info_responses))
-        if path in {"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"}:
-            requests.append((method, path, kwargs["json"]))
-            return FakeJsonResponse({})
-        raise AssertionError(path)
-
-    async def fake_open_stream_with_fallback(url, length, play_session_id):
-        return FakeStreamResponse([b"chunk"])
-
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(*_args, **_kwargs):
-        await real_sleep(0)
-
-    uniform_values = iter([0, 0, 0, 0, 0.95])
-
-    monkeypatch.setattr(client, "_request", fake_request)
-    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open_stream_with_fallback)
-    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: next(uniform_values))
-    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
-
-    assert asyncio.run(client.play(item, time=30)) is True
-
-    assert requests[-2][1] == "/Sessions/Playing/Progress"
-    assert requests[-2][2]["EventName"] == "pause"
-    assert requests[-2][2]["IsPaused"] is True
-    assert requests[-1][1] == "/Sessions/Playing/Stopped"
-    assert requests[-1][2]["IsPaused"] is True
-
-
-def test_play_reports_stopped_with_unrounded_final_tick(monkeypatch):
-    account = EmbyAccount(url="https://example.com/emby", username="user", password="pass")
-    client = Emby(account)
-    client._user_id = "user-id"
-    item = {"Id": "abc123", "Name": "片名", "RunTimeTicks": 300000000}
-    requests = []
-    playback_info_responses = iter(
-        [
-            {
-                "PlaySessionId": "play-session-initial",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=false&IsPlayback=false",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-            {
-                "PlaySessionId": "play-session-live",
-                "MediaSources": [
-                    {
-                        "Id": "media-1",
-                        "DirectStreamUrl": "/emby/videos/abc123/stream.mkv?AutoOpenLiveStream=true&IsPlayback=true",
-                    }
-                ],
-            },
-        ]
-    )
-
-    async def fake_request(method, path, _session_kwargs=None, **kwargs):
-        requests.append((method, path, kwargs.get("json")))
-        if path == "/Videos/abc123/AdditionalParts":
-            return FakeJsonResponse({})
-        if path == "/Items/abc123/PlaybackInfo":
-            return FakeJsonResponse(next(playback_info_responses))
-        if path in {"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"}:
-            return FakeJsonResponse({})
-        raise AssertionError(path)
-
-    async def fake_open_stream_with_fallback(url, length, play_session_id):
-        return FakeStreamResponse([b"chunk"])
-
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(*_args, **_kwargs):
-        await real_sleep(0)
-
-    uniform_values = iter([0, 0, 0, 0, 0.95])
-
-    monkeypatch.setattr(client, "_request", fake_request)
-    monkeypatch.setattr(client, "_open_stream_with_fallback", fake_open_stream_with_fallback)
-    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: next(uniform_values))
-    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
-
-    assert asyncio.run(client.play(item, time=30)) is True
-
-    final_method, final_path, final_payload = requests[-1]
-    assert final_method == "POST"
-    assert final_path == "/Sessions/Playing/Stopped"
-    assert final_payload["PositionTicks"] == 300000000
-    assert final_payload["NowPlayingQueue"] == []
+    stopped_call = next(call for call in calls if call["path"] == "/Sessions/Playing/Stopped")
+    assert stopped_call["params"] == session_params
+    assert stopped_call["headers"] == {"Content-Type": "text/plain"}
+    assert stopped_call["json"]["PositionTicks"] == 5500000000
+    assert stopped_call["json"]["AudioStreamIndex"] == 0
 
 
 def test_watch_returns_success_result_when_userdata_changes(monkeypatch):
@@ -708,6 +442,62 @@ def test_watch_returns_success_result_when_userdata_changes(monkeypatch):
     assert result.after.runtime_ticks == 18900000000
 
 
+def test_watch_returns_success_result_when_resume_updates_before_item_details(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", time=60)
+    client = Emby(account)
+    client.items = {
+        "abc123": {"Id": "abc123", "Name": "片名", "MediaType": "Video", "RunTimeTicks": 18900000000}
+    }
+
+    monkeypatch.setattr("embykeeper.emby.api.random.shuffle", lambda _items: None)
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *_args: 0)
+    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+
+    client.play = AsyncMock(return_value=True)
+    responses = iter(
+        [
+            {
+                "Id": "abc123",
+                "Name": "片名",
+                "RunTimeTicks": 18900000000,
+                "UserData": {"PlayCount": 11, "PlaybackPositionTicks": 0},
+            },
+            {
+                "Id": "abc123",
+                "Name": "片名",
+                "RunTimeTicks": 18900000000,
+                "UserData": {"PlayCount": 11, "PlaybackPositionTicks": 0},
+            },
+        ]
+    )
+    client.get_item = AsyncMock(side_effect=lambda _iid: next(responses))
+    client.get_resume_items = AsyncMock(
+        return_value={
+            "Items": [
+                {
+                    "Id": "abc123",
+                    "Name": "片名",
+                    "RunTimeTicks": 18900000000,
+                    "UserData": {
+                        "PlayCount": 11,
+                        "PlaybackPositionTicks": 18360000000,
+                        "LastPlayedDate": "2026-04-29T15:08:12Z",
+                    },
+                }
+            ]
+        }
+    )
+
+    result = asyncio.run(client.watch())
+
+    assert isinstance(result, EmbyWatchResult)
+    assert result.success is True
+    assert result.failure_stage is None
+    assert result.after.last_played_date == datetime(2026, 4, 29, 15, 8, 12, tzinfo=timezone.utc)
+    assert result.after.playback_position_ticks == 18360000000
+
+
 def test_watch_returns_failed_result_when_userdata_stays_stale(monkeypatch):
     account = EmbyAccount(url="https://example.com", username="user", password="pass", time=60)
     client = Emby(account)
@@ -738,6 +528,7 @@ def test_watch_returns_failed_result_when_userdata_stays_stale(monkeypatch):
         ]
     )
     client.get_item = AsyncMock(side_effect=lambda _iid: next(responses))
+    client.get_resume_items = AsyncMock(return_value={"Items": []})
 
     result = asyncio.run(client.watch())
 
