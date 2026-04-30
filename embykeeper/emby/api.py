@@ -251,10 +251,7 @@ class Emby:
     def _format_connect_error(self, error: Exception, url: str) -> str:
         error_msg = re.sub(r"\s+See\s+.*?\s+first for more details\.\.?", "", str(error))
         if "TLSV1_ALERT_UNRECOGNIZED_NAME" in error_msg:
-            return (
-                f"{error_msg} "
-                f'请检查服务器地址 "{url}" 的主机名是否与证书、SNI 或反向代理配置匹配.'
-            )
+            return f"{error_msg} " f'请检查服务器地址 "{url}" 的主机名是否与证书、SNI 或反向代理配置匹配.'
         return error_msg
 
     async def _request(self, method: str, path: str, _login=False, _session_kwargs=None, **kw) -> Response:

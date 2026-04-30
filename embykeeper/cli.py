@@ -103,7 +103,9 @@ def print_help(ctx: typer.Context, param: typer.CallbackParam, value: bool):
 
 def _notifier_should_start(*, instant: bool, once: bool) -> bool:
     notifier = config.notifier
-    return bool(notifier and notifier.enabled and ((not once) or config.noexit or (instant and notifier.once)))
+    return bool(
+        notifier and notifier.enabled and ((not once) or config.noexit or (instant and notifier.once))
+    )
 
 
 def _instant_notifications_allowed(*, instant: bool) -> bool:
@@ -544,7 +546,11 @@ async def main(
         allow_instant_notifications = _instant_notifications_allowed(instant=instant)
         should_start_notifier = _notifier_should_start(instant=instant, once=once)
         if should_start_notifier:
-            from .notify import clear_instant_notification_window, set_instant_notification_window, start_notifier
+            from .notify import (
+                clear_instant_notification_window,
+                set_instant_notification_window,
+                start_notifier,
+            )
 
             streams = await start_notifier()
         else:

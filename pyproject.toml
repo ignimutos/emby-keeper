@@ -102,6 +102,7 @@ find = { namespaces = false }
 
 [tool.black]
 line-length = 110
+target-version = ["py313"]
 extend-exclude = '''
 # A regex preceded with ^/ will apply only to files and directories
 # in the root of the project.
