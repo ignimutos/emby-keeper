@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development commands
 
-- `make develop` — create the local `venv` and install runtime + dev dependencies.
+- `make develop` — create the local `.venv` with uv and install runtime + dev dependencies.
 - `make install` — install runtime dependencies only.
 - `make run` — run the CLI with the default `config.toml`.
 - `make run/debug` — run the CLI with debug logging.
 - `make run/web` — run the web console.
 - `make lint` — run Python formatting/check hooks (`black .` and `pre-commit run -a`).
 - `make test` — run the default pytest suite.
-- Single test: `venv/bin/python -m pytest tests/test_cli.py::test_version`.
-- `tox` — run the CI test matrix (`py38`, `py39`, `py310`).
-- `python -m build` — build the Python package.
+- Single test: `uv run pytest tests/test_cli.py::test_version`.
+- `tox` — run the auxiliary multi-version test matrix (`py310`, `py311`, `py312`, `py313`).
+- `uv build` — build the Python package.
 - Docs only: `make docs/dev`, `make docs/build`, `make docs/preview`.
 - `make help/simple` — show the canonical top-level make targets.
 

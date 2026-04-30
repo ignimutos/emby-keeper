@@ -2,14 +2,14 @@
 
 ## 配置与部署
 
-Embykeeper 可以在 `python >= 3.8, < 3.11` 运行.
+Embykeeper 可以在 `python >= 3.10` 运行.
 
-需要通过 [virtualvenv](https://virtualenv.pypa.io/) 进行环境管理和包安装:
+推荐通过 [uv](https://docs.astral.sh/uv/) 进行环境管理和包安装:
 
 ```bash
-python -m venv embykeeper-venv
+uv venv --python 3.13 embykeeper-venv
 . ./embykeeper-venv/bin/activate
-pip install embykeeper
+uv pip install embykeeper
 ```
 
 随后, 您需要执行:
@@ -60,8 +60,8 @@ tmux a
 
 当您需要更新版本时, 您需要执行:
 
-```
-pip install -U embykeeper
+```bash
+uv pip install -U embykeeper
 ```
 
 然后重新运行应用.

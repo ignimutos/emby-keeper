@@ -336,3 +336,8 @@ docs/.vitepress/cache
 
 *.fish
 .gitnexus
+.firecrawl/
+.worktrees/
+/.claude/worktrees/
+docs/superpowers
+runtime/
