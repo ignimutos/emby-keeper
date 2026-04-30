@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import uuid
 from unittest.mock import AsyncMock
 
 from curl_cffi import CurlHttpVersion
@@ -143,18 +144,24 @@ def test_format_connect_error_explains_unrecognized_name():
     assert "bad-host.example.com" in message
 
 
-def test_get_fake_env_defaults_to_hills_android(monkeypatch):
+def test_get_fake_env_defaults_to_hills_with_random_device_fallback(monkeypatch):
     account = EmbyAccount(url="https://example.com", username="user", password="pass")
     client = Emby(account)
     patch_cache(monkeypatch)
+    monkeypatch.setattr(client, "get_random_device", lambda: "Random iPhone")
+    monkeypatch.setattr(
+        emby_api_module.uuid,
+        "uuid4",
+        lambda: uuid.UUID("12345678-1234-5678-1234-567812345678"),
+    )
 
     env = client.get_fake_env()
 
     assert env.client == "Hills"
-    assert env.device == "PLC110"
+    assert env.device == "Random iPhone"
     assert env.client_version == "1.6.1"
     assert env.useragent == "Hills/1.6.1 (android; 15)"
-    assert len(env.device_id) == 16
+    assert env.device_id == "12345678-1234-5678-1234-567812345678".upper()
 
 
 def test_env_rebuilds_when_cached_default_client_is_legacy_fileball(monkeypatch):
@@ -172,13 +179,133 @@ def test_env_rebuilds_when_cached_default_client_is_legacy_fileball(monkeypatch)
             }
         },
     )
+    monkeypatch.setattr(client, "get_random_device", lambda: "Random iPhone")
+    monkeypatch.setattr(
+        emby_api_module.uuid,
+        "uuid4",
+        lambda: uuid.UUID("12345678-1234-5678-1234-567812345678"),
+    )
 
     env = client.env
 
     assert env.client == "Hills"
-    assert env.device == "PLC110"
+    assert env.device == "Random iPhone"
     assert env.client_version == "1.6.1"
     assert env.useragent == "Hills/1.6.1 (android; 15)"
+    assert env.device_id == "12345678-1234-5678-1234-567812345678".upper()
+
+
+def test_get_fake_env_uses_global_fingerprint_when_account_fields_are_missing(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    patch_cache(monkeypatch)
+    monkeypatch.setattr(
+        emby_api_module,
+        "config",
+        SimpleNamespace(
+            emby=SimpleNamespace(
+                client="Hills",
+                device="Test Device",
+                device_id="0123456789abcdef",
+                client_version="1.6.1",
+                useragent="Hills/1.6.1 (android; 15)",
+            )
+        ),
+    )
+
+    env = client.get_fake_env()
+
+    assert env.client == "Hills"
+    assert env.device == "Test Device"
+    assert env.device_id == "0123456789abcdef"
+    assert env.client_version == "1.6.1"
+    assert env.useragent == "Hills/1.6.1 (android; 15)"
+
+
+def test_get_fake_env_account_fingerprint_overrides_global(monkeypatch):
+    account = EmbyAccount(
+        url="https://example.com",
+        username="user",
+        password="pass",
+        client="Account Client",
+        device="Account Device",
+        device_id="account-device-id",
+        client_version="9.9.9",
+        useragent="Account/9.9.9",
+    )
+    client = Emby(account)
+    patch_cache(monkeypatch)
+    monkeypatch.setattr(
+        emby_api_module,
+        "config",
+        SimpleNamespace(
+            emby=SimpleNamespace(
+                client="Hills",
+                device="Test Device",
+                device_id="0123456789abcdef",
+                client_version="1.6.1",
+                useragent="Hills/1.6.1 (android; 15)",
+            )
+        ),
+    )
+
+    env = client.get_fake_env()
+
+    assert env.client == "Account Client"
+    assert env.device == "Account Device"
+    assert env.device_id == "account-device-id"
+    assert env.client_version == "9.9.9"
+    assert env.useragent == "Account/9.9.9"
+
+
+def test_env_rebuilds_when_global_fingerprint_snapshot_changes(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    store = patch_cache(
+        monkeypatch,
+        {
+            "emby.env.example.com.user": {
+                "client": "Hills",
+                "device": "Old Device",
+                "device_id": "old-device-id",
+                "client_version": "1.6.0",
+                "useragent": "Hills/1.6.0 (android; 14)",
+                "config_snapshot": {
+                    "client": "Hills",
+                    "device": "Old Device",
+                    "device_id": "old-device-id",
+                    "client_version": "1.6.0",
+                    "useragent": "Hills/1.6.0 (android; 14)",
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(
+        emby_api_module,
+        "config",
+        SimpleNamespace(
+            emby=SimpleNamespace(
+                client="Hills",
+                device="Test Device",
+                device_id="0123456789abcdef",
+                client_version="1.6.1",
+                useragent="Hills/1.6.1 (android; 15)",
+            )
+        ),
+    )
+
+    env = client.env
+
+    assert env.device == "Test Device"
+    assert env.device_id == "0123456789abcdef"
+    assert env.client_version == "1.6.1"
+    assert store["emby.env.example.com.user"]["config_snapshot"] == {
+        "client": "Hills",
+        "device": "Test Device",
+        "device_id": "0123456789abcdef",
+        "client_version": "1.6.1",
+        "useragent": "Hills/1.6.1 (android; 15)",
+    }
 
 
 def test_open_stream_uses_http11_hills_android_headers(monkeypatch):
@@ -186,8 +313,8 @@ def test_open_stream_uses_http11_hills_android_headers(monkeypatch):
     client = Emby(account)
     client._env = SimpleNamespace(
         client="Hills",
-        device="PLC110",
-        device_id="dc92b1ddef2981c4",
+        device="Test Device",
+        device_id="0123456789abcdef",
         client_version="1.6.1",
         useragent="Hills/1.6.1 (android; 15)",
     )
@@ -268,8 +395,8 @@ def test_play_uses_single_hills_android_playback_info_request(monkeypatch):
     client._token = "token"
     client._env = SimpleNamespace(
         client="Hills",
-        device="PLC110",
-        device_id="dc92b1ddef2981c4",
+        device="Test Device",
+        device_id="0123456789abcdef",
         client_version="1.6.1",
         useragent="Hills/1.6.1 (android; 15)",
     )
@@ -337,10 +464,10 @@ def test_play_uses_single_hills_android_playback_info_request(monkeypatch):
     assert playback_info_calls[0]["params"] == {
         "UserId": "user-id",
         "IsPlayback": "true",
-        "X-Emby-Authorization": 'Emby Client="Hills", Device="PLC110", DeviceId="dc92b1ddef2981c4", Version="1.6.1"',
+        "X-Emby-Authorization": 'Emby Client="Hills", Device="Test Device", DeviceId="0123456789abcdef", Version="1.6.1"',
         "X-Emby-Client": "Hills",
-        "X-Emby-Device-Name": "PLC110",
-        "X-Emby-Device-Id": "dc92b1ddef2981c4",
+        "X-Emby-Device-Name": "Test Device",
+        "X-Emby-Device-Id": "0123456789abcdef",
         "X-Emby-Client-Version": "1.6.1",
         "X-Emby-Language": "zh-cn",
         "X-Emby-Token": "token",
@@ -354,10 +481,10 @@ def test_play_uses_single_hills_android_playback_info_request(monkeypatch):
     session_params = {
         "reqformat": "json",
         "UserId": "user-id",
-        "X-Emby-Authorization": 'Emby Client="Hills", Device="PLC110", DeviceId="dc92b1ddef2981c4", Version="1.6.1"',
+        "X-Emby-Authorization": 'Emby Client="Hills", Device="Test Device", DeviceId="0123456789abcdef", Version="1.6.1"',
         "X-Emby-Client": "Hills",
-        "X-Emby-Device-Name": "PLC110",
-        "X-Emby-Device-Id": "dc92b1ddef2981c4",
+        "X-Emby-Device-Name": "Test Device",
+        "X-Emby-Device-Id": "0123456789abcdef",
         "X-Emby-Client-Version": "1.6.1",
         "X-Emby-Language": "zh-cn",
         "X-Emby-Token": "token",
@@ -641,6 +768,52 @@ def test_watch_returns_failed_result_when_retry_is_exhausted(monkeypatch):
     assert result.item_name == "片名"
 
 
+def test_watch_uses_global_time_when_account_time_is_missing(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", time=None)
+    client = Emby(account)
+    client.items = {
+        "abc123": {"Id": "abc123", "Name": "片名", "MediaType": "Video", "RunTimeTicks": 18900000000}
+    }
+
+    monkeypatch.setattr(
+        emby_api_module,
+        "config",
+        SimpleNamespace(emby=SimpleNamespace(time=[30, 90], retries=5)),
+    )
+    monkeypatch.setattr("embykeeper.emby.api.random.shuffle", lambda _items: None)
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *args: 45 if args == (30, 90) else 0)
+    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+
+    client.play = AsyncMock(return_value=True)
+    client.get_item = AsyncMock(
+        side_effect=[
+            {
+                "Id": "abc123",
+                "Name": "片名",
+                "RunTimeTicks": 18900000000,
+                "UserData": {"PlayCount": 11, "PlaybackPositionTicks": 0},
+            },
+            {
+                "Id": "abc123",
+                "Name": "片名",
+                "RunTimeTicks": 18900000000,
+                "UserData": {
+                    "LastPlayedDate": "2026-04-29T15:08:12Z",
+                    "PlayCount": 12,
+                    "PlaybackPositionTicks": 450000000,
+                },
+            },
+        ]
+    )
+
+    result = asyncio.run(client.watch())
+
+    assert result.success is True
+    client.play.assert_awaited_once()
+    assert client.play.await_args.kwargs["time"] == 45
+
+
 def test_watch_returns_failed_result_when_no_playable_items_exist(monkeypatch):
     account = EmbyAccount(url="https://example.com", username="user", password="pass", time=60)
     client = Emby(account)
@@ -668,3 +841,49 @@ def test_watch_returns_failed_result_when_time_config_is_invalid():
     assert isinstance(result, EmbyWatchResult)
     assert result.success is False
     assert result.failure_stage == "配置错误"
+
+
+def test_watch_falls_back_to_builtin_time_when_global_and_account_time_are_missing(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", time=None)
+    client = Emby(account)
+    client.items = {
+        "abc123": {"Id": "abc123", "Name": "片名", "MediaType": "Video", "RunTimeTicks": 18900000000}
+    }
+
+    monkeypatch.setattr(
+        emby_api_module,
+        "config",
+        SimpleNamespace(emby=SimpleNamespace(time=None, retries=5)),
+    )
+    monkeypatch.setattr("embykeeper.emby.api.random.shuffle", lambda _items: None)
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *args: 42 if args == (300, 600) else 0)
+    monkeypatch.setattr("embykeeper.emby.api.random.random", lambda: 0)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+
+    client.play = AsyncMock(return_value=True)
+    client.get_item = AsyncMock(
+        side_effect=[
+            {
+                "Id": "abc123",
+                "Name": "片名",
+                "RunTimeTicks": 18900000000,
+                "UserData": {"PlayCount": 11, "PlaybackPositionTicks": 0},
+            },
+            {
+                "Id": "abc123",
+                "Name": "片名",
+                "RunTimeTicks": 18900000000,
+                "UserData": {
+                    "LastPlayedDate": "2026-04-29T15:08:12Z",
+                    "PlayCount": 12,
+                    "PlaybackPositionTicks": 420000000,
+                },
+            },
+        ]
+    )
+
+    result = asyncio.run(client.watch())
+
+    assert result.success is True
+    client.play.assert_awaited_once()
+    assert client.play.await_args.kwargs["time"] == 42

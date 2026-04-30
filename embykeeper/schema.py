@@ -152,6 +152,12 @@ class EmbyAccount(ConfigModel):
 
 
 class EmbyConfig(MediaServerBaseConfig):
+    time: Optional[Union[int, List[int]]] = None
+    client: Optional[str] = None
+    device: Optional[str] = None
+    device_id: Optional[str] = None
+    client_version: Optional[str] = None
+    useragent: Optional[str] = None
     account: Optional[List[EmbyAccount]] = []
 
 

@@ -42,6 +42,19 @@ def test_create_config_after_asyncio_run(in_temp_dir: Path):
     assert result.exit_code == 0
 
 
+def test_create_config_includes_global_emby_fingerprint(in_temp_dir: Path):
+    result = runner.invoke(app, ["--example-config"])
+    emby_section = result.stdout.split("[[emby.account]]", 1)[0]
+
+    assert "time = [300, 600]" in emby_section
+    assert 'client = "Hills"' in emby_section
+    assert "device = " in emby_section
+    assert "device_id = " in emby_section
+    assert 'client_version = "1.6.1"' in emby_section
+    assert 'useragent = "Hills/1.6.1 (android; 15)"' in emby_section
+    assert result.exit_code == 0
+
+
 def test_notifier_policy_starts_for_one_shot_instant_when_notifier_once_enabled(monkeypatch):
     monkeypatch.setattr(
         cli,

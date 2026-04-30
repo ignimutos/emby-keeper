@@ -184,6 +184,20 @@ class ConfigManager(ProxyBase):
         c.add(comment("最大可同时进行的站点数:"))
         c["concurrency"] = default_config.emby.concurrency
         c.add(nl())
+        c.add(comment("模拟观看的随机时长范围 (秒), 账号未单独配置时使用全局设置:"))
+        c["time"] = default_emby_account.time
+        c.add(nl())
+        c.add(comment("默认 Emby 指纹, 账号未单独配置时使用以下值:"))
+        c["client"] = "Hills"
+        c.add(nl())
+        c["device"] = "PLC110"
+        c.add(nl())
+        c["device_id"] = "dc92b1ddef2981c4"
+        c.add(nl())
+        c["client_version"] = "1.6.1"
+        c.add(nl())
+        c["useragent"] = "Hills/1.6.1 (android; 15)"
+        c.add(nl())
         c.add(comment("=" * 80))
         c.add(comment("Emby 账号, 您可以重复该片段多次以增加多个账号."))
         c.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#emby-account-子项"))
@@ -199,15 +213,20 @@ class ConfigManager(ProxyBase):
         a["username"] = fake.profile()["username"]
         a["password"] = fake.password()
         a.add(nl())
-        a.add(comment("模拟观看的随机时长范围 (秒), 可以为单个数字 (120) 或时间范围 ([120, 240]):"))
-        a["time"] = default_emby_account.time
-        a.add(nl())
         a.add(comment("以下为进阶配置, 请取消注释 (删除左侧的 #) 以使用:"))
         a.add(nl())
+        a.add(comment("模拟观看的随机时长范围 (秒), 默认使用全局设置 emby.time:"))
+        a.add(comment(item({"time": default_emby_account.time}).as_string()))
         a.add(comment("每隔几天进行保活, 默认使用全局设置 emby.interval_days:"))
         a.add(comment(item({"interval_days": default_config.emby.interval_days}).as_string()))
         a.add(comment("每次进行保活的当日时间范围, 默认使用全局设置 emby.time_range:"))
         a.add(comment(item({"time_range": default_config.emby.time_range}).as_string()))
+        a.add(comment("以下指纹设置默认使用全局 emby.*; 如需单账号覆盖请取消注释:"))
+        a.add(comment(item({"client": "Hills"}).as_string()))
+        a.add(comment(item({"device": "PLC110"}).as_string()))
+        a.add(comment(item({"device_id": "dc92b1ddef2981c4"}).as_string()))
+        a.add(comment(item({"client_version": "1.6.1"}).as_string()))
+        a.add(comment(item({"useragent": "Hills/1.6.1 (android; 15)"}).as_string()))
         a.add(comment("无法获取视频长度时, 依然允许播放 (默认最大播放 10 分钟左右, 可能播放超出实际长度):"))
         a.add(comment(item({"allow_stream": True}).as_string()))
         a.add(comment("取消注释以不使用配置文件定义的代理进行连接"))
@@ -225,7 +244,6 @@ class ConfigManager(ProxyBase):
                             "url": fake.url(["https"]).rstrip("/") + ":443",
                             "username": fake.profile()["username"],
                             "password": fake.password(),
-                            "time": default_emby_account.time,
                         }
                     ]
                 }

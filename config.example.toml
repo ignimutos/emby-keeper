@@ -18,6 +18,16 @@ interval_days = "<7,12>"
 # 最大可同时进行的站点数:
 concurrency = 1
 
+# 模拟观看的随机时长范围 (秒), 账号未单独配置时使用全局设置:
+time = [300, 600]
+
+# 默认 Emby 指纹, 账号未单独配置时使用以下值:
+client = "Hills"
+device = "PLC110"
+device_id = "dc92b1ddef2981c4"
+client_version = "1.6.1"
+useragent = "Hills/1.6.1 (android; 15)"
+
 # ================================================================================
 # Emby 账号, 您可以重复该片段多次以增加多个账号.
 # 详见: https://emby-keeper.github.io/guide/配置文件#emby-account-子项
@@ -32,16 +42,23 @@ url = "https://cox.com:443"
 username = "alexandercody"
 password = "a@@Q(8ZcpB"
 
-# 模拟观看的随机时长范围 (秒), 可以为单个数字 (120) 或时间范围 ([120, 240]):
-time = [300, 600]
-
 # 以下为进阶配置, 请取消注释 (删除左侧的 #) 以使用:
+
+# 模拟观看的随机时长范围 (秒), 默认使用全局设置 emby.time:
+# time = [300, 600]
 
 # 每隔几天进行保活, 默认使用全局设置 emby.interval_days:
 # interval_days = "<7,12>"
 
 # 每次进行保活的当日时间范围, 默认使用全局设置 emby.time_range:
 # time_range = "<11:00AM,11:00PM>"
+
+# 以下指纹设置默认使用全局 emby.*; 如需单账号覆盖请取消注释:
+# client = "Hills"
+# device = "PLC110"
+# device_id = "dc92b1ddef2981c4"
+# client_version = "1.6.1"
+# useragent = "Hills/1.6.1 (android; 15)"
 
 # 无法获取视频长度时, 依然允许播放 (默认最大播放 10 分钟左右, 可能播放超出实际长度):
 # allow_stream = true
@@ -57,7 +74,6 @@ time = [300, 600]
 # url = "https://www.terry.biz:443"
 # username = "marymurphy"
 # password = "!8OXJolmsd"
-# time = [300, 600]
 
 # ================================================================================
 # Telegram 机器人签到相关设置

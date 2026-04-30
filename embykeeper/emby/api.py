@@ -21,6 +21,11 @@ from embykeeper.emby.notification import EmbyPlaybackSnapshot, EmbyWatchResult, 
 
 logger = logger.bind(scheme="embywatcher")
 
+EMBY_FINGERPRINT_FIELDS = ("client", "device", "device_id", "client_version", "useragent")
+DEFAULT_EMBY_CLIENT = "Hills"
+DEFAULT_EMBY_CLIENT_VERSION = "1.6.1"
+DEFAULT_EMBY_WATCH_TIME = [300, 600]
+
 
 class EmbyError(Exception):
     pass
@@ -104,24 +109,49 @@ class Emby:
         self._token = data.get("token", None)
         self._user_id = data.get("userid", None)
 
+    def _configured_env_value(self, key: str) -> Optional[str]:
+        account_value = getattr(self.a, key)
+        if account_value:
+            return account_value
+        try:
+            return getattr(config.emby, key, None)
+        except RuntimeError:
+            return None
+
+    def _config_snapshot(self):
+        return {key: self._configured_env_value(key) for key in EMBY_FINGERPRINT_FIELDS}
+
+    def _configured_watch_time(self):
+        if self.a.time is not None and "time" in self.a.model_fields_set:
+            return self.a.time
+        try:
+            global_time = getattr(config.emby, "time", None)
+        except RuntimeError:
+            global_time = None
+        if global_time is not None:
+            return global_time
+        return self.a.time if self.a.time is not None else DEFAULT_EMBY_WATCH_TIME
+
     def _load_env(self):
         cache_key = f"emby.env.{self.hostname}.{self.a.username}"
         data: dict = cache.get(cache_key, {})
         if data:
-            # 检查用户配置是否与缓存一致
             should_clear = False
-            for key, user_value in {
-                "client_version": self.a.client_version,
-                "client": self.a.client,
-                "device": self.a.device,
-                "device_id": self.a.device_id,
-                "useragent": self.a.useragent,
-            }.items():
-                if user_value and data.get(key) != user_value:
-                    should_clear = True
-                    break
+            snapshot = self._config_snapshot()
+            cached_snapshot = data.get("config_snapshot")
 
-            if not should_clear and not self.a.client and data.get("client") in {"Fileball", "Filebar"}:
+            if cached_snapshot is None:
+                for key, configured_value in snapshot.items():
+                    if configured_value and data.get(key) != configured_value:
+                        should_clear = True
+                        break
+                if (
+                    not should_clear
+                    and snapshot["client"] is None
+                    and data.get("client") in {"Fileball", "Filebar"}
+                ):
+                    should_clear = True
+            elif cached_snapshot != snapshot:
                 should_clear = True
 
             if should_clear:
@@ -188,17 +218,22 @@ class Emby:
         return uuid.UUID(int=rd.getrandbits(128))
 
     def get_fake_env(self):
-        cached_env: dict = cache.get(f"emby.env.{self.hostname}.{self.a.username}", {})
-        if not self.a.client and cached_env.get("client") in {"Fileball", "Filebar"}:
+        cache_key = f"emby.env.{self.hostname}.{self.a.username}"
+        cached_env: dict = cache.get(cache_key, {})
+        snapshot = self._config_snapshot()
+
+        if snapshot["client"] is None and cached_env.get("client") in {"Fileball", "Filebar"}:
             cached_env = {}
 
-        version = self.a.client_version or cached_env.get("client_version") or "1.6.1"
-        client = self.a.client or cached_env.get("client") or "Hills"
-        device = self.a.device or cached_env.get("device") or "PLC110"
-        device_id = self.a.device_id or cached_env.get("device_id") or uuid.uuid4().hex[:16]
+        version = (
+            snapshot["client_version"] or cached_env.get("client_version") or DEFAULT_EMBY_CLIENT_VERSION
+        )
+        client = snapshot["client"] or cached_env.get("client") or DEFAULT_EMBY_CLIENT
+        device = snapshot["device"] or cached_env.get("device") or self.get_random_device()
+        device_id = snapshot["device_id"] or cached_env.get("device_id") or str(uuid.uuid4()).upper()
         useragent = (
             self.useragent
-            or self.a.useragent
+            or snapshot["useragent"]
             or cached_env.get("useragent")
             or cached_env.get("ua")
             or f"{client}/{version} (android; 15)"
@@ -210,10 +245,11 @@ class Emby:
             "device_id": device_id,
             "client_version": version,
             "useragent": useragent,
+            "config_snapshot": snapshot,
         }
 
         env = EmbyEnv(**data)
-        cache.set(f"emby.env.{self.hostname}.{self.a.username}", data)
+        cache.set(cache_key, data)
         return env
 
     def build_headers(self):
@@ -929,13 +965,16 @@ class Emby:
     async def watch(self) -> EmbyWatchResult:
         """Play one or more videos until account time requirement played."""
 
+        configured_time = self._configured_watch_time()
         try:
-            if isinstance(self.a.time, Iterable):
-                req_time = random.uniform(*self.a.time)
+            if isinstance(configured_time, Iterable):
+                req_time = random.uniform(*configured_time)
             else:
-                req_time = self.a.time
+                req_time = configured_time
         except TypeError:
-            self.log.warning(f"无法解析 time 配置, 请检查配置: {self.a.time} (应该为数字或两个数字的数组).")
+            self.log.warning(
+                f"无法解析 time 配置, 请检查配置: {configured_time} (应该为数字或两个数字的数组)."
+            )
             return self._build_watch_result(
                 success=False,
                 failure_stage="配置错误",
