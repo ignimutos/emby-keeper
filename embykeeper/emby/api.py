@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 import random
 import string
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import uuid
 from typing import Iterable, List, Union, Optional
 import re
@@ -260,7 +260,15 @@ class Emby:
             url = path
         else:
             base_url = str(self.a.url).rstrip("/")
-            url = f"{base_url}/{path.lstrip('/')}"
+            parts = urlsplit(base_url)
+            origin = f"{parts.scheme}://{parts.netloc}"
+            base_path = parts.path.rstrip("/")
+            if path.startswith("/") and (
+                not base_path or path == base_path or path.startswith(f"{base_path}/")
+            ):
+                url = f"{origin}{path}"
+            else:
+                url = f"{base_url}/{path.lstrip('/')}"
 
         last_err = None
         session_kwargs = _session_kwargs or {}
@@ -313,17 +321,9 @@ class Emby:
                 "User-Agent": "VLC/3.0.21 LibVLC/3.0.21",
                 "X-Playback-Session-Id": play_session_id,
             },
+            _session_kwargs={"http_version": CurlHttpVersion.V1_1},
         )
-        try:
-            return await self._request(**request_kwargs)
-        except EmbyConnectError as error:
-            if not self._is_http2_flow_control_error(error):
-                raise
-            self.log.warning("流媒体文件访问触发 HTTP/2 兼容问题, 正在回退到 HTTP/1.1.")
-            return await self._request(
-                **request_kwargs,
-                _session_kwargs={"http_version": CurlHttpVersion.V1_1},
-            )
+        return await self._request(**request_kwargs)
 
     async def use_cfsolver(self):
         from embykeeper.cloudflare import get_cf_clearance
@@ -547,9 +547,12 @@ class Emby:
         playback_info = resp.json()
 
         play_session_id = playback_info.get("PlaySessionId", "")
-        if "MediaSources" in playback_info:
-            media_source_id = playback_info["MediaSources"][0]["Id"]
-            direct_stream_url = playback_info["MediaSources"][0].get("DirectStreamUrl", None)
+        audio_stream_index = -1
+        media_sources = playback_info.get("MediaSources") or []
+        if media_sources:
+            media_source_id = media_sources[0]["Id"]
+            direct_stream_url = media_sources[0].get("DirectStreamUrl", None)
+            audio_stream_index = media_sources[0].get("DefaultAudioStreamIndex", audio_stream_index)
         else:
             media_source_id = "".join(
                 random.choice(string.ascii_lowercase + string.digits) for _ in range(32)
@@ -581,8 +584,17 @@ class Emby:
                 ),
                 json=playback_info_data,
             )
+            playback_info = resp.json()
+            play_session_id = playback_info.get("PlaySessionId", play_session_id)
+            media_sources = playback_info.get("MediaSources") or []
+            if media_sources:
+                media_source_id = media_sources[0]["Id"]
+                direct_stream_url = media_sources[0].get("DirectStreamUrl", direct_stream_url)
+                audio_stream_index = media_sources[0].get("DefaultAudioStreamIndex", audio_stream_index)
 
-        def get_playing_data(tick, update=False, stop=False):
+        playback_start_time_ticks = 0
+
+        def get_playing_data(tick, update=False, stop=False, pause=False):
             data = {
                 "SubtitleOffset": 0,
                 "MaxStreamingBitrate": 420000000,
@@ -590,12 +602,12 @@ class Emby:
                 "SubtitleStreamIndex": -1,
                 "VolumeLevel": 100,
                 "PlaybackRate": 1,
-                "PlaybackStartTimeTicks": int(datetime.now().timestamp() // 10 * 10 * 10000000),
+                "PlaybackStartTimeTicks": playback_start_time_ticks,
                 "PositionTicks": tick,
                 "PlaySessionId": play_session_id,
             }
             if update:
-                data["EventName"] = "timeupdate"
+                data["EventName"] = "pause" if pause else "timeupdate"
             if stop:
                 queue = []
             else:
@@ -608,16 +620,22 @@ class Emby:
                     "PlaylistIndex": 0,
                     "ItemId": str(iid),
                     "RepeatMode": "RepeatNone",
-                    "AudioStreamIndex": -1,
+                    "AudioStreamIndex": audio_stream_index,
                     "PlayMethod": "DirectStream",
                     "CanSeek": True,
-                    "IsPaused": False,
+                    "IsPaused": pause,
                 }
             )
             return data
 
         async def stream():
-            url = direct_stream_url or f"/Videos/{iid}/stream"
+            if media_source_id and play_session_id:
+                url = (
+                    f"/Videos/{iid}/stream?MediaSourceId={quote(str(media_source_id))}"
+                    f"&PlaySessionId={quote(str(play_session_id))}&Static=true"
+                )
+            else:
+                url = direct_stream_url or f"/Videos/{iid}/stream"
             length = 0
             last_err_time = datetime.now()
             while True:
@@ -629,6 +647,7 @@ class Emby:
                         await asyncio.sleep(random.random())
                         if random.random() < 0.01:
                             continue
+                    break
                 except RequestsError:
                     if (datetime.now() - last_err_time).total_seconds() > 5:
                         self.log.debug("流媒体文件访问错误, 正在重试.")
@@ -659,6 +678,7 @@ class Emby:
 
             last_report_t = t
             progress_errors = 0
+            last_progress_tick = 0
             report_interval = 5  # Start with 5 seconds
             report_count = 0
             max_interval = 300  # 5 minutes in seconds
@@ -687,6 +707,7 @@ class Emby:
                         ),
                         10,
                     )
+                    last_progress_tick = tick
                 except Exception as e:
                     self.log.debug(f"播放状态设定错误: {e}")
                     progress_errors += 1
@@ -704,11 +725,16 @@ class Emby:
 
         try:
             final_percentage = random.uniform(0.95, 1.0)
-            final_tick = int((time * final_percentage) // 10 * 10 * 10000000)
+            final_tick = max(last_progress_tick, int(time * final_percentage * 10000000))
             await self._request(
                 method="POST",
                 path="/Sessions/Playing/Progress",
-                json=get_playing_data(final_tick, stop=True),
+                json=get_playing_data(final_tick, update=True, pause=True),
+            )
+            await self._request(
+                method="POST",
+                path="/Sessions/Playing/Stopped",
+                json=get_playing_data(final_tick, stop=True, pause=True),
             )
             self.log.info(f"播放完成, 共 {time:.0f} 秒.")
             return True
