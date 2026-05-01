@@ -254,10 +254,11 @@ class Emby:
 
     def build_headers(self):
         headers = {}
-        full_auth_header = (
-            f'Emby Client="{self.env.client}", Device="{self.env.device}", '
+        auth_header = (
+            f'Client="{self.env.client}", Device="{self.env.device}", '
             f'DeviceId="{self.env.device_id}", Version="{self.env.client_version}"'
         )
+        full_auth_header = f"Emby {auth_header}"
         headers["User-Agent"] = self.useragent or self.env.useragent
         headers["Accept-Language"] = "zh-cn"
         headers["Content-Type"] = "application/json"
@@ -265,6 +266,7 @@ class Emby:
         headers["X-Emby-Authorization"] = full_auth_header
         if self.token:
             headers["X-Emby-Token"] = self.token
+            headers["Authorization"] = f'MediaBrowser {auth_header}, Token="{self.token}"'
         return headers
 
     def _get_session(self, **overrides) -> AsyncSession:
@@ -367,6 +369,7 @@ class Emby:
         stream_headers = {
             "User-Agent": self.useragent or self.env.useragent,
             "Accept": "*/*",
+            "Icy-MetaData": "1",
             "Range": f"bytes={length}-",
         }
         return await self._request(
@@ -378,6 +381,7 @@ class Emby:
             _session_kwargs={
                 "headers": stream_headers,
                 "http_version": CurlHttpVersion.V1_1,
+                "impersonate": None,
             },
         )
 

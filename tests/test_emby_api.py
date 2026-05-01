@@ -308,7 +308,50 @@ def test_env_rebuilds_when_global_fingerprint_snapshot_changes(monkeypatch):
     }
 
 
-def test_open_stream_uses_http11_hills_android_headers(monkeypatch):
+def test_build_headers_include_mediabrowser_authorization():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._token = "token"
+    client._env = SimpleNamespace(
+        client="Hills",
+        device="PLC110",
+        device_id="0123456789abcdef",
+        client_version="1.6.1",
+        useragent="Hills/1.6.1 (android; 15)",
+    )
+
+    headers = client.build_headers()
+
+    assert headers["X-Emby-Authorization"] == (
+        'Emby Client="Hills", Device="PLC110", DeviceId="0123456789abcdef", Version="1.6.1"'
+    )
+    assert headers["Authorization"] == (
+        'MediaBrowser Client="Hills", Device="PLC110", DeviceId="0123456789abcdef", '
+        'Version="1.6.1", Token="token"'
+    )
+
+
+def test_build_headers_omit_mediabrowser_authorization_without_token(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._env = SimpleNamespace(
+        client="Hills",
+        device="PLC110",
+        device_id="0123456789abcdef",
+        client_version="1.6.1",
+        useragent="Hills/1.6.1 (android; 15)",
+    )
+    monkeypatch.setattr(client, "_load_credentials", lambda: None)
+
+    headers = client.build_headers()
+
+    assert headers["X-Emby-Authorization"] == (
+        'Emby Client="Hills", Device="PLC110", DeviceId="0123456789abcdef", Version="1.6.1"'
+    )
+    assert "Authorization" not in headers
+
+
+def test_open_stream_uses_hills_mobile_headers(monkeypatch):
     account = EmbyAccount(url="https://example.com", username="user", password="pass")
     client = Emby(account)
     client._env = SimpleNamespace(
@@ -334,9 +377,11 @@ def test_open_stream_uses_http11_hills_android_headers(monkeypatch):
             "headers": {
                 "User-Agent": "Hills/1.6.1 (android; 15)",
                 "Accept": "*/*",
+                "Icy-MetaData": "1",
                 "Range": "bytes=0-",
             },
             "http_version": CurlHttpVersion.V1_1,
+            "impersonate": None,
         }
     ]
 
