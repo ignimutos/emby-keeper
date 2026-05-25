@@ -26,15 +26,23 @@ class EmbyManager:
         self._tasks: Dict[str, asyncio.Task] = {}  # account_spec -> task
         self._schedulers: Dict[str, Scheduler] = {}  # account_spec -> scheduler
         self._running: Set[str] = set()  # Currently running account_specs
+        self._selected_account_names: Optional[Set[str]] = None
         self._pool = AsyncTaskPool()
 
         config.on_list_change("emby.account", self._handle_account_change)
+
+    def _is_account_selected(self, account: EmbyAccount) -> bool:
+        if self._selected_account_names is None:
+            return True
+        return bool(account.name and account.name in self._selected_account_names)
 
     def _handle_account_change(self, added: List[EmbyAccount], removed: List[EmbyAccount]):
         """Handle account additions and removals"""
         need_reschedule_unified = False
 
         for account in removed:
+            if not self._is_account_selected(account):
+                continue
             spec = self.get_spec(account)
             if account.time_range or account.interval_days:
                 # 独立账号, 直接移除其任务
@@ -46,6 +54,8 @@ class EmbyManager:
                 logger.info(f"账号 {spec} Emby 保活已被移除, 将重新调度保活任务.")
 
         for account in added:
+            if not self._is_account_selected(account):
+                continue
             if account.enabled:
                 if account.time_range or account.interval_days:
                     # 新增独立账号, 添加其调度任务
@@ -114,10 +124,13 @@ class EmbyManager:
         self._schedulers[account_spec] = scheduler
         return scheduler
 
-    def schedule_unified_accounts(self):
+    def schedule_unified_accounts(self, accounts: Optional[List[EmbyAccount]] = None):
         """Schedule unified emby watch for global accounts"""
+        source_accounts = accounts if accounts is not None else config.emby.account
         unified_accounts = [
-            a for a in config.emby.account if a.enabled and not (a.time_range or a.interval_days)
+            a
+            for a in source_accounts
+            if self._is_account_selected(a) and a.enabled and not (a.time_range or a.interval_days)
         ]
 
         if not unified_accounts:
@@ -140,13 +153,10 @@ class EmbyManager:
         self._schedulers["unified"] = scheduler
         self._pool.add(scheduler.schedule())
 
-    async def schedule_all(self, instant: bool = False):
-        """Start scheduling emby watch for all accounts"""
-        # Schedule unified accounts
-        self.schedule_unified_accounts()
+    async def _schedule_accounts(self, accounts: List[EmbyAccount]):
+        self.schedule_unified_accounts(accounts)
 
-        # Schedule independent accounts
-        for account in config.emby.account:
+        for account in accounts:
             if account.enabled and (account.time_range or account.interval_days):
                 scheduler = self.schedule_independent_account(account)
                 if scheduler:
@@ -157,6 +167,15 @@ class EmbyManager:
             return None
 
         await self._pool.wait()
+
+    async def schedule_accounts(self, accounts: List[EmbyAccount]):
+        self._selected_account_names = {account.name for account in accounts if account.name}
+        return await self._schedule_accounts(accounts)
+
+    async def schedule_all(self, instant: bool = False):
+        """Start scheduling emby watch for all accounts"""
+        self._selected_account_names = None
+        return await self._schedule_accounts(config.emby.account)
 
     async def play_url(self, url: str):
         parsed = urlparse(url)
@@ -233,9 +252,11 @@ class EmbyManager:
         spec = self.get_spec(account)
         scheduler = self._schedulers.get(spec)
         if scheduler:
-            return scheduler.next_time
+            return getattr(scheduler, "notification_next_time", scheduler.next_time)
         scheduler = self._schedulers.get("unified")
-        return scheduler.next_time if scheduler else None
+        if scheduler:
+            return getattr(scheduler, "notification_next_time", scheduler.next_time)
+        return None
 
     async def _watch_main(self, accounts: List[EmbyAccount], instant: bool = False):
         if not accounts:
@@ -305,14 +326,17 @@ class EmbyManager:
 
         failed_accounts = []
         successful_accounts = []
+        completed_results = []
         for task in asyncio.as_completed(tasks):
             account, result = await task
-            result.next_time = self._get_next_watch_time(account)
-            logger.bind(log=True).info(format_watch_notification(result))
+            completed_results.append((account, result))
             if result.success:
                 successful_accounts.append(self.get_spec(account))
             else:
                 failed_accounts.append(self.get_spec(account))
+        for account, result in completed_results:
+            result.next_time = self._get_next_watch_time(account)
+            logger.bind(log=True).info(format_watch_notification(result))
         fails = len(failed_accounts)
 
         if fails:
@@ -327,5 +351,8 @@ class EmbyManager:
             logger.info(f"保活成功 ({len(tasks)}/{len(tasks)}): {', '.join(successful_accounts)}.")
         return ctx.finish(RunStatus.SUCCESS, f"保活成功")
 
+    async def run_accounts(self, accounts: List[EmbyAccount], instant: bool = False):
+        return await self._watch_main(accounts, instant)
+
     async def run_all(self, instant: bool = False):
-        return await self._watch_main(config.emby.account, instant)
+        return await self.run_accounts(config.emby.account, instant)

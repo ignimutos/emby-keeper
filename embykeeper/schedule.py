@@ -94,6 +94,7 @@ class Scheduler:
         self.on_next_time = on_next_time
         self._cache_key = f"scheduler.{sid}" if sid else None
         self._next_time = None
+        self._notification_next_time = None
         self._ctx: RunContext = None
 
     def _parse_time(self, t):
@@ -119,11 +120,47 @@ class Scheduler:
             self._next_time = self._get_next_time()
         return self._next_time
 
+    @property
+    def notification_next_time(self) -> datetime:
+        """获取用于通知的下一次执行时间."""
+        if self._notification_next_time:
+            return self._notification_next_time
+        if self._next_time is None:
+            return self.next_time
+        self._notification_next_time = self._calculate_next_time()
+        return self._notification_next_time
+
+    def _calculate_next_time(self) -> datetime:
+        if isinstance(self.days, (list, tuple)):
+            interval = self.days[0] + (self.days[1] - self.days[0])
+        else:
+            interval = self.days
+
+        return next_random_datetime(
+            start_time=self.start_time, end_time=self.end_time, interval_days=interval
+        )
+
+    def _cache_next_time(self, next_time: datetime):
+        from .cache import cache
+
+        if self._cache_key:
+            cache.set(
+                self._cache_key,
+                {
+                    "config_hash": self._get_scheduler_config(),
+                    "next_time": next_time.isoformat(),
+                    "description": self.description,
+                },
+            )
+
     def _get_next_time(self) -> datetime:
         """计算或获取缓存的下一次执行时间"""
         from .cache import cache
 
         now = datetime.now()
+        if self._next_time and self._next_time > now:
+            return self._next_time
+
         next_time = None
 
         # Try to get cached next execution time
@@ -143,26 +180,8 @@ class Scheduler:
 
         # Calculate new next_time if needed
         if not next_time:
-            # Calculate interval days
-            if isinstance(self.days, (list, tuple)):
-                interval = self.days[0] + (self.days[1] - self.days[0])
-            else:
-                interval = self.days
-
-            next_time = next_random_datetime(
-                start_time=self.start_time, end_time=self.end_time, interval_days=interval
-            )
-
-            # Cache the next execution time with config hash
-            if self._cache_key:
-                cache.set(
-                    self._cache_key,
-                    {
-                        "config_hash": self._get_scheduler_config(),
-                        "next_time": next_time.isoformat(),
-                        "description": self.description,
-                    },
-                )
+            next_time = self._calculate_next_time()
+            self._cache_next_time(next_time)
 
         return next_time
 
@@ -209,8 +228,13 @@ class Scheduler:
                     cache.delete(self._cache_key)
                 except KeyError:
                     pass
+            if self._notification_next_time:
+                self._next_time = self._notification_next_time
+                self._cache_next_time(self._next_time)
+            else:
+                self._next_time = None
+            self._notification_next_time = None
             self._ctx = None
-            self._next_time = None
 
             # If days is 0, break the loop after one execution
             if isinstance(self.days, (list, tuple)) and self.days[0] == 0:

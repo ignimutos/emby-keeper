@@ -13,6 +13,7 @@ from appdirs import user_data_dir
 from . import var, __author__, __name__ as __product__, __url__, __version__
 from .utils import AsyncTaskPool, show_exception
 from .config import config
+from .schema import EmbyAccount
 
 
 class AsyncTyper(typer.Typer):
@@ -113,6 +114,54 @@ def _instant_notifications_allowed(*, instant: bool) -> bool:
     return bool(instant and notifier and notifier.enabled and notifier.once)
 
 
+def _normalize_emby_account_names(values: List[str]) -> List[str]:
+    names = []
+    seen = set()
+    for value in values:
+        for chunk in value.split(","):
+            name = chunk.strip()
+            if not name or name in seen:
+                continue
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def _select_emby_accounts(names: List[str]) -> List[EmbyAccount]:
+    selectable_accounts: List[EmbyAccount] = []
+    for account in config.emby.account:
+        if account.enabled and account.name:
+            selectable_accounts.append(account)
+
+    if not selectable_accounts:
+        logger.error("当前没有可供 --emby-account 选择的 Emby 账号.")
+        raise typer.Exit(1)
+
+    name_to_account = {}
+    duplicated_names = []
+    duplicate_seen = set()
+    for account in selectable_accounts:
+        account_name = account.name
+        if account_name in name_to_account:
+            if account_name not in duplicate_seen:
+                duplicated_names.append(account_name)
+                duplicate_seen.add(account_name)
+            continue
+        name_to_account[account_name] = account
+
+    if duplicated_names:
+        logger.error(f"Emby 账号 name 重复: {', '.join(duplicated_names)}")
+        raise typer.Exit(1)
+
+    missing_names = [name for name in names if name not in name_to_account]
+    if missing_names:
+        available_names = ",".join(name_to_account.keys())
+        logger.error(f"未找到 Emby 账号: {', '.join(missing_names)}. 可用账号名: \"{available_names}\"")
+        raise typer.Exit(1)
+
+    return [name_to_account[name] for name in names]
+
+
 @app.async_command(
     help=(
         f"欢迎使用 [orange3]{__product__.capitalize()}[/] {__version__} " ":cinema: 无参数默认开启全部功能."
@@ -149,6 +198,12 @@ async def main(
         "-e",
         rich_help_panel="模块开关",
         help="仅启用 Emby 保活功能",
+    ),
+    emby_account: List[str] = typer.Option(
+        [],
+        "--emby-account",
+        rich_help_panel="模块开关",
+        help="仅执行指定名称的 Emby 账号, 可重复传入或使用逗号分隔",
     ),
     subsonic: bool = typer.Option(
         False,
@@ -405,13 +460,14 @@ async def main(
         logger.warning("您当前处于计划任务调试模式, 将在 10 秒后运行计划任务.")
     config.noexit = noexit
 
-    if not checkiner and not monitor and not emby and not messager and not subsonic and not registrar:
-        checkiner = True
-        emby = True
-        subsonic = True
-        monitor = True
-        messager = True
-        registrar = True
+    normalized_emby_account_names = _normalize_emby_account_names(emby_account)
+    if normalized_emby_account_names and not emby:
+        logger.error("参数 --emby-account 必须与 -e/--emby 一起使用.")
+        raise typer.Exit(1)
+
+    selected_emby_accounts: Optional[List[EmbyAccount]] = None
+    if normalized_emby_account_names:
+        selected_emby_accounts = _select_emby_accounts(normalized_emby_account_names)
 
     config.on_change(
         "proxy", lambda x, y: logger.bind(scheme="config").warning("修改代理设置后, 可能需要重启程序以生效.")
@@ -444,6 +500,14 @@ async def main(
             logger.error(f"本地缓存读写失败: {e}, 请使用 MongoDB 缓存, 程序将退出.")
             show_exception(e, regular=False)
             return
+
+    if not checkiner and not monitor and not emby and not messager and not subsonic and not registrar:
+        checkiner = True
+        emby = True
+        subsonic = True
+        monitor = True
+        messager = True
+        registrar = True
 
     if clean:
         from .clean import cleaner
@@ -563,7 +627,10 @@ async def main(
                 if checkin_man:
                     pool.add(checkin_man.run_all(instant=True), "站点签到")
                 if emby_man:
-                    pool.add(emby_man.run_all(instant=True), "Emby 保活")
+                    if selected_emby_accounts is None:
+                        pool.add(emby_man.run_all(instant=True), "Emby 保活")
+                    else:
+                        pool.add(emby_man.run_accounts(selected_emby_accounts, instant=True), "Emby 保活")
                 if subsonic_man:
                     pool.add(subsonic_man.run_all(instant=True), "Subsonic 保活")
                 await pool.wait()
@@ -580,7 +647,10 @@ async def main(
             if message_man:
                 pool.add(message_man.run_all(), "自动水群")
             if emby_man:
-                pool.add(emby_man.schedule_all(), "Emby 保活")
+                if selected_emby_accounts is None:
+                    pool.add(emby_man.schedule_all(), "Emby 保活")
+                else:
+                    pool.add(emby_man.schedule_accounts(selected_emby_accounts), "Emby 保活")
             if subsonic_man:
                 pool.add(subsonic_man.schedule_all(), "Subsonic 保活")
         if config.noexit:

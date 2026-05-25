@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 import pkgutil
 import re
 from functools import lru_cache
@@ -14,6 +15,14 @@ from embykeeper.utils import show_exception, to_iterable
 from . import __name__ as __telechecker__
 
 logger = logger.bind(scheme="telegram")
+
+
+def _module_has_ignore_marker(module_path: Path) -> bool:
+    try:
+        source = module_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return bool(re.search(r"^\s*__ignore__\s*=\s*True\s*$", source, re.MULTILINE))
 
 
 def get_spec(type: str) -> tuple[str, str]:
@@ -41,14 +50,18 @@ def get_names(type: str, allow_ignore=False) -> List[str]:
     sub, _ = get_spec(type)
     results = []
     typemodule = import_module(f"{__telechecker__}.{sub}")
+    base_path = Path(next(iter(typemodule.__path__)))
     for _, mn, _ in pkgutil.iter_modules(typemodule.__path__):
-        module = import_module(f"{__telechecker__}.{sub}.{mn}")
-        if not allow_ignore:
-            if not getattr(module, "__ignore__", False):
-                results.append(mn)
-        else:
+        if allow_ignore:
             if (not mn.startswith("_")) and (not mn.startswith("test")):
                 results.append(mn)
+            continue
+
+        module_path = base_path / f"{mn}.py"
+        if not module_path.exists():
+            module_path = base_path / mn / "__init__.py"
+        if not _module_has_ignore_marker(module_path):
+            results.append(mn)
     return results
 
 

@@ -45,7 +45,7 @@ def test_notify_filters_allow_instant_window_when_once_enabled():
 
 def test_format_watch_notification_success():
     result = EmbyWatchResult(
-        account_spec="premises@墨云阁",
+        account_spec="account-A",
         success=True,
         failure_stage=None,
         item_name="片名",
@@ -66,7 +66,7 @@ def test_format_watch_notification_success():
     )
 
     assert format_watch_notification(result) == (
-        "Emby保活成功｜premises@墨云阁｜片名\n\n"
+        "Emby保活成功｜account-A｜片名\n\n"
         "视频ID: abc123\n"
         "Emby记录时间: 2026-04-29 15:08:12\n"
         "回写进度: 97% / 1836s\n"
@@ -75,9 +75,31 @@ def test_format_watch_notification_success():
     )
 
 
+def test_format_watch_notification_success_includes_warning_line():
+    result = EmbyWatchResult(
+        account_spec="account-A",
+        success=True,
+        item_name="片名",
+        item_id="abc123",
+        after=EmbyPlaybackSnapshot(
+            last_played_date=datetime(2026, 4, 29, 15, 8, 12, tzinfo=timezone.utc),
+            play_count=12,
+            playback_position_ticks=18360000000,
+            runtime_ticks=18900000000,
+        ),
+        warning="Stopped 上报失败，但 Emby 已回写播放记录: 由于连接错误或服务器错误无法停止播放: boom",
+        next_time=datetime(2026, 5, 11, 11, 18),
+    )
+
+    assert (
+        "附加信息: Stopped 上报失败，但 Emby 已回写播放记录: 由于连接错误或服务器错误无法停止播放: boom"
+        in format_watch_notification(result)
+    )
+
+
 def test_format_watch_notification_failure_uses_fallbacks():
     result = EmbyWatchResult(
-        account_spec="premises@墨云阁",
+        account_spec="account-A",
         success=False,
         failure_stage="播放后校验未生效",
         item_name=None,
@@ -88,7 +110,7 @@ def test_format_watch_notification_failure_uses_fallbacks():
     )
 
     assert format_watch_notification(result) == (
-        "Emby保活失败｜premises@墨云阁｜未获取\n\n"
+        "Emby保活失败｜account-A｜未获取\n\n"
         "视频ID: 未获取\n"
         "Emby记录时间: 未更新\n"
         "回写进度: 未更新\n"
@@ -155,7 +177,7 @@ def test_has_userdata_update_handles_mixed_naive_aware_datetimes():
 
 def test_format_watch_notification_progress_fallback_when_zero_ticks():
     result = EmbyWatchResult(
-        account_spec="premises@墨云阁",
+        account_spec="account-A",
         success=True,
         item_name="片名",
         item_id="abc123",
@@ -174,7 +196,7 @@ def test_format_watch_notification_progress_fallback_when_zero_ticks():
 
 def test_format_watch_notification_progress_fallback_when_position_is_none():
     result = EmbyWatchResult(
-        account_spec="premises@墨云阁",
+        account_spec="account-A",
         success=True,
         item_name="片名",
         item_id="abc123",
@@ -193,7 +215,7 @@ def test_format_watch_notification_progress_fallback_when_position_is_none():
 
 def test_format_watch_notification_normalizes_aware_datetime_to_utc():
     result = EmbyWatchResult(
-        account_spec="premises@墨云阁",
+        account_spec="account-A",
         success=True,
         item_name="片名",
         item_id="abc123",
@@ -245,7 +267,7 @@ class DummyRunContext:
 
 def test_get_next_watch_time_prefers_account_scheduler():
     manager = EmbyManager()
-    account = EmbyAccount(url="https://example.com", username="user", password="pass", name="墨云阁")
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", name="service-A")
     manager._schedulers[manager.get_spec(account)] = SimpleNamespace(next_time=datetime(2026, 5, 11, 11, 18))
     manager._schedulers["unified"] = SimpleNamespace(next_time=datetime(2026, 5, 12, 12, 0))
 
@@ -254,7 +276,7 @@ def test_get_next_watch_time_prefers_account_scheduler():
 
 def test_get_next_watch_time_falls_back_to_unified_scheduler():
     manager = EmbyManager()
-    account = EmbyAccount(url="https://example.com", username="user", password="pass", name="墨云阁")
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", name="service-A")
     manager._schedulers["unified"] = SimpleNamespace(next_time=datetime(2026, 5, 12, 12, 0))
 
     assert manager._get_next_watch_time(account) == datetime(2026, 5, 12, 12, 0)
@@ -273,7 +295,7 @@ def test_schedule_messages_stay_out_of_notify_channel(monkeypatch):
         url="https://example.com",
         username="user",
         password="pass",
-        name="墨云阁",
+        name="service-A",
         interval_days="1",
         time_range="8:00AM",
     )
@@ -282,7 +304,9 @@ def test_schedule_messages_stay_out_of_notify_channel(monkeypatch):
     scheduler.on_next_time(datetime(2026, 5, 11, 11, 18))
 
     assert stub.bound_calls == []
-    assert stub.info_messages == ["下一次 Emby 账号 (user@墨云阁) 的保活将在 05-11 11:18 AM 进行."]
+    assert stub.info_messages == [
+        f"下一次 Emby 账号 ({manager.get_spec(account)}) 的保活将在 05-11 11:18 AM 进行."
+    ]
 
 
 def test_watch_main_sends_one_notify_per_account(monkeypatch):
@@ -322,10 +346,17 @@ def test_watch_main_sends_one_notify_per_account(monkeypatch):
     monkeypatch.setattr("embykeeper.emby.main.random.uniform", lambda *_args: 0)
 
     manager = EmbyManager()
-    manager._schedulers["unified"] = SimpleNamespace(next_time=datetime(2026, 5, 11, 11, 18))
+    manager._schedulers["unified"] = SimpleNamespace(
+        next_time=datetime(2026, 5, 11, 11, 18),
+        notification_next_time=datetime(2026, 5, 22, 10, 40),
+    )
     accounts = [
-        EmbyAccount(url="https://example.com", username="user1", password="pass", name="甲", play_id="a1"),
-        EmbyAccount(url="https://example.com", username="user2", password="pass", name="乙", play_id="b2"),
+        EmbyAccount(
+            url="https://example.com", username="acct_one", password="pass", name="service-one", play_id="a1"
+        ),
+        EmbyAccount(
+            url="https://example.com", username="acct_two", password="pass", name="service-two", play_id="b2"
+        ),
     ]
 
     asyncio.run(manager._watch_main(accounts, instant=True))
@@ -333,6 +364,6 @@ def test_watch_main_sends_one_notify_per_account(monkeypatch):
     notify_messages = {message for message in stub.info_messages if message.startswith("Emby保活成功｜")}
     assert len(stub.bound_calls) == 2
     assert notify_messages == {
-        "Emby保活成功｜user1@甲｜片名\n\n视频ID: a1\nEmby记录时间: 未更新\n回写进度: 未更新\n播放次数: 未更新\n下次保活: 2026-05-11 11:18",
-        "Emby保活成功｜user2@乙｜片名\n\n视频ID: b2\nEmby记录时间: 未更新\n回写进度: 未更新\n播放次数: 未更新\n下次保活: 2026-05-11 11:18",
+        f"Emby保活成功｜{accounts[0].username}@{accounts[0].name}｜片名\n\n视频ID: a1\nEmby记录时间: 未更新\n回写进度: 未更新\n播放次数: 未更新\n下次保活: 2026-05-22 10:40",
+        f"Emby保活成功｜{accounts[1].username}@{accounts[1].name}｜片名\n\n视频ID: b2\nEmby记录时间: 未更新\n回写进度: 未更新\n播放次数: 未更新\n下次保活: 2026-05-22 10:40",
     }

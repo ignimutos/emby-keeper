@@ -1,6 +1,7 @@
 from typing import List, Optional, Union, Dict, Any, ClassVar
-from pydantic import BaseModel, Field, model_validator, ValidationError
+from pydantic import BaseModel, Field, GetCoreSchemaHandler, model_validator, ValidationError
 from pydantic.networks import HttpUrl
+from pydantic_core import core_schema
 
 DEFAULT_TIME_RANGE = "<11:00AM,11:00PM>"
 DEFAULT_EMBY_INTERVAL_DAYS = "<7,12>"
@@ -27,11 +28,11 @@ class ConfigModel(BaseModel):
 
 class UseStr(str):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: GetCoreSchemaHandler):
+        return core_schema.no_info_before_validator_function(cls.validate, handler(str))
 
     @classmethod
-    def validate(cls, v, info):
+    def validate(cls, v):
         if isinstance(v, (int, float)):
             return str(v)
         return v
@@ -39,14 +40,14 @@ class UseStr(str):
 
 class UseHttpUrl(HttpUrl):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: GetCoreSchemaHandler):
+        return core_schema.no_info_before_validator_function(cls.validate, handler.generate_schema(HttpUrl))
 
     @classmethod
-    def validate(cls, v, info):
+    def validate(cls, v):
         if isinstance(v, str) and not v.startswith(("http://", "https://")):
             v = f"https://{v}"
-        return HttpUrl(v)
+        return v
 
     def __str__(self):
         return str(self._url)
@@ -152,6 +153,12 @@ class EmbyAccount(ConfigModel):
 
 
 class EmbyConfig(MediaServerBaseConfig):
+    time: Optional[Union[int, List[int]]] = None
+    client: Optional[str] = None
+    device: Optional[str] = None
+    device_id: Optional[str] = None
+    client_version: Optional[str] = None
+    useragent: Optional[str] = None
     account: Optional[List[EmbyAccount]] = []
 
 

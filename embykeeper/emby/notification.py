@@ -19,6 +19,7 @@ class EmbyWatchResult:
     account_spec: str
     success: bool
     failure_stage: str | None = None
+    warning: str | None = None
     item_name: str | None = None
     item_id: str | None = None
     before: EmbyPlaybackSnapshot = field(default_factory=EmbyPlaybackSnapshot)
@@ -73,6 +74,9 @@ def format_watch_notification(result: EmbyWatchResult) -> str:
         f"回写进度: {_format_progress(result.after)}",
         f"播放次数: {result.after.play_count if result.after.play_count is not None else FALLBACK_UPDATE}",
     ]
+
+    if result.warning:
+        lines.append(f"附加信息: {result.warning}")
 
     if not result.success:
         lines.append(f"失败阶段: {result.failure_stage or '未说明'}")
