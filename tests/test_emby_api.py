@@ -151,7 +151,8 @@ def test_get_session_uses_10_second_timeout_by_default(monkeypatch):
         def __init__(self, **kwargs):
             recorded.update(kwargs)
 
-    monkeypatch.setattr(emby_api_module, "AsyncSession", RecordingAsyncSession)
+    # _get_session 逻辑已下沉到 transport 模块, 会话类引用随之迁移
+    monkeypatch.setattr("embykeeper.emby.transport.AsyncSession", RecordingAsyncSession)
 
     client._get_session()
 

@@ -284,9 +284,10 @@ def test_get_next_watch_time_falls_back_to_unified_scheduler():
 
 def test_schedule_messages_stay_out_of_notify_channel(monkeypatch):
     stub = StubLogger()
-    monkeypatch.setattr("embykeeper.emby.main.logger", stub)
+    # 调度骨架 (Scheduler 构建 + 日志) 位于 scheduled_manager 基类模块
+    monkeypatch.setattr("embykeeper.scheduled_manager.logger", stub)
     monkeypatch.setattr(
-        "embykeeper.emby.main.Scheduler.from_str",
+        "embykeeper.scheduled_manager.Scheduler.from_str",
         lambda *args, **kwargs: SimpleNamespace(on_next_time=kwargs["on_next_time"]),
     )
 

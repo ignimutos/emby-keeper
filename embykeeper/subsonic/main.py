@@ -7,18 +7,28 @@ from loguru import logger
 
 from embykeeper.config import config
 from embykeeper.runinfo import RunContext, RunStatus
-from embykeeper.schedule import Scheduler
 from embykeeper.schema import SubsonicAccount
 from embykeeper.utils import show_exception
+
+from embykeeper.scheduled_manager import ScheduledKeepaliveManager
 
 from .player import SubsonicPlayer
 
 logger = logger.bind(scheme="subsonic")
 
 
-class SubsonicManager:
-    def get_spec(self, a: SubsonicAccount):
-        return f"{a.username}@{a.name or a.url.host}"
+class SubsonicManager(ScheduledKeepaliveManager):
+    """Subsonic 保活管理器. 调度骨架见 scheduled_manager.ScheduledKeepaliveManager.
+
+    修复: 独立账号调度曾错误调用 _watch_main (AttributeError), 且读取
+    config.emby.* 配置段 (配置泄漏)。现统一走 _listen_main 与 config.subsonic.*。
+    """
+
+    section = "subsonic"
+    title = "Subsonic"
+
+    async def _run_accounts(self, accounts: List[SubsonicAccount], instant: bool = False):
+        return await self._listen_main(accounts, instant)
 
     async def _listen_main(self, accounts: List[SubsonicAccount], instant: bool = False):
         if not accounts:
@@ -80,63 +90,3 @@ class SubsonicManager:
                 f"保活成功 ({len(tasks)}/{len(tasks)}): {', '.join(successful_accounts)}."
             )
         return ctx.finish(RunStatus.SUCCESS, f"保活成功")
-
-    async def run_all(self, instant: bool = False):
-        return await self._listen_main(config.subsonic.account, instant)
-
-    async def schedule_all(self, instant: bool = False):
-        unified_accounts: List[SubsonicAccount] = []
-        independent_accounts: List[SubsonicAccount] = []
-        tasks = []
-
-        # Separate accounts into global and site-specific
-        for account in config.subsonic.account:
-            if not account.enabled:
-                continue
-            if account.time_range or account.interval_days:
-                independent_accounts.append(account)
-            else:
-                unified_accounts.append(account)
-
-        # Schedule global accounts together
-        if unified_accounts:
-            on_next_time = lambda t: logger.bind(log=True).info(
-                f"下一次 Subsonic 保活将在 {t.strftime('%m-%d %H:%M %p')} 进行."
-            )
-            scheduler = Scheduler.from_str(
-                func=lambda ctx: self._listen_main(unified_accounts, instant),
-                interval_days=config.emby.interval_days,
-                time_range=config.emby.time_range,
-                on_next_time=on_next_time,
-                sid="subsonic.watch.global",
-                description="Subsonic 保活任务",
-            )
-            tasks.append(scheduler.schedule())
-
-        # Schedule individual site accounts
-        for account in independent_accounts:
-            account_spec = self.get_spec(account)
-            time_range = account.time_range or config.emby.time_range
-            interval = account.interval_days or config.emby.interval_days
-
-            # 创建一个函数来生成 on_next_time 回调, 确保每个账号都有自己的 account_spec
-            def make_on_next_time(spec):
-                return lambda t: logger.bind(log=True).info(
-                    f"下一次 Subsonic 账号 ({spec}) 的保活将在 {t.strftime('%m-%d %H:%M %p')} 进行."
-                )
-
-            scheduler = Scheduler.from_str(
-                func=lambda ctx: self._watch_main([account], False),
-                interval_days=interval,
-                time_range=time_range,
-                on_next_time=make_on_next_time(account_spec),  # 使用工厂函数创建回调
-                sid=f"subsonic.watch.{account_spec}",
-                description=f"Subsonic 保活任务 - {account_spec}",
-            )
-            tasks.append(scheduler.schedule())
-
-        if not tasks:
-            logger.info("没有需要执行的 Subsonic 保活任务")
-            return None
-
-        await asyncio.gather(*tasks)

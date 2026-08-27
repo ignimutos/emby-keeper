@@ -166,7 +166,10 @@ def test_schedule_accounts_returns_none_when_no_schedulers(monkeypatch):
     def fake_info(message):
         messages.append(message)
 
-    monkeypatch.setattr(emby_main, "logger", SimpleNamespace(info=fake_info))
+    # 调度骨架的日志在 scheduled_manager 模块内
+    import embykeeper.scheduled_manager as scheduled_manager
+
+    monkeypatch.setattr(scheduled_manager, "logger", SimpleNamespace(info=fake_info))
 
     result = asyncio.run(manager.schedule_accounts(accounts))
 
