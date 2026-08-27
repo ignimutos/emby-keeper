@@ -1,3 +1,14 @@
+"""插件分发器.
+
+站点模块按约定被动态发现与加载。为减少隐式约定, 模块可显式声明:
+
+- ``__export__``: 类列表, 声明该站点导出的插件类 (优先于类名约定匹配)。
+- ``__ignore__ = True``: 标记该模块不参与默认启用/配置生成 (因避免为列举而
+  import 全部插件, 该标记经源码检测读取)。
+
+未匹配的站点名会给出响亮警告而非静默跳过。
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -137,6 +148,16 @@ def get_cls(type: str, names: List[str] = None) -> List[Type]:
             module_path = f"{__telechecker__}.{sub}.{name.lower()}"
             try:
                 module = import_module(module_path)
+                # 显式契约优先: 模块声明 __export__ 类列表则直接采用
+                exported = getattr(module, "__export__", None)
+                if exported is not None:
+                    if not isinstance(exported, (list, tuple)) or not all(
+                        inspect.isclass(c) for c in exported
+                    ):
+                        logger.warning(f'模块 "{module_path}" 的 __export__ 必须是类列表, 已跳过该站点.')
+                        continue
+                    results.extend(exported)
+                    continue
                 found_valid_class = False
                 expected_name = name.replace("_old", "").replace("_", "")
                 for cn, cls in inspect.getmembers(module, inspect.isclass):

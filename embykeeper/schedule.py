@@ -1,4 +1,5 @@
 import asyncio
+import random
 from datetime import datetime, time, timedelta
 from dateutil import parser
 import re
@@ -130,14 +131,18 @@ class Scheduler:
         self._notification_next_time = self._calculate_next_time()
         return self._notification_next_time
 
-    def _calculate_next_time(self) -> datetime:
+    def _interval_days(self) -> int:
+        """解析实际间隔天数: 区间配置时随机取范围内的值, 否则取固定值."""
         if isinstance(self.days, (list, tuple)):
-            interval = self.days[0] + (self.days[1] - self.days[0])
-        else:
-            interval = self.days
+            low, high = self.days[0], self.days[1]
+            if low >= high:
+                return low
+            return random.randint(low, high)
+        return self.days
 
+    def _calculate_next_time(self) -> datetime:
         return next_random_datetime(
-            start_time=self.start_time, end_time=self.end_time, interval_days=interval
+            start_time=self.start_time, end_time=self.end_time, interval_days=self._interval_days()
         )
 
     def _cache_next_time(self, next_time: datetime):
