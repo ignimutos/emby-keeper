@@ -3,7 +3,8 @@ FROM python:3.13 AS builder
 WORKDIR /src
 COPY . .
 
-RUN python -m pip install --no-cache-dir -U pip uv \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    python -m pip install --no-cache-dir -U pip uv \
     && uv venv /opt/venv \
     && . /opt/venv/bin/activate \
     && uv sync --active --locked --no-dev --no-editable
