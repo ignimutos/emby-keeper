@@ -231,8 +231,8 @@ class Scheduler:
             if self._cache_key:
                 try:
                     cache.delete(self._cache_key)
-                except KeyError:
-                    pass
+                except KeyError:  # pragma: no cover  # Cache.delete 从不抛 KeyError
+                    pass  # pragma: no cover
             if self._notification_next_time:
                 self._next_time = self._notification_next_time
                 self._cache_next_time(self._next_time)

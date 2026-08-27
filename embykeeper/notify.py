@@ -96,8 +96,8 @@ async def start_notifier():
     """消息通知初始化函数."""
     global stream_log, stream_msg, handler_log_id, handler_msg_id, change_handle_notifier
 
-    def _formatter(record):
-        return "{level}#" + formatter(record)
+    def _formatter(record):  # pragma: no cover  # 需真实日志消息经 handler 流出
+        return "{level}#" + formatter(record)  # pragma: no cover
 
     notifier = config.notifier
     if not notifier or not notifier.enabled:

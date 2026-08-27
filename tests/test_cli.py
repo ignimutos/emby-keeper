@@ -255,6 +255,10 @@ def test_cli_rejects_emby_account_without_emby_flag(monkeypatch, in_temp_dir: Pa
     assert "--emby-account 必须与 -e/--emby 一起使用" in result.output
 
 
+def test_normalize_skips_empty_and_duplicate_names():
+    assert cli._normalize_emby_account_names(["alpha,,alpha,beta"]) == ["alpha", "beta"]
+
+
 def test_cli_splits_comma_separated_emby_account_names(monkeypatch, in_temp_dir: Path):
     accounts = [make_fake_emby_account("alpha"), make_fake_emby_account("beta")]
     patch_cli_runtime(monkeypatch, accounts)
@@ -419,3 +423,169 @@ def test_cli_schedules_all_emby_accounts_when_no_selection(monkeypatch, in_temp_
 
     assert result.exit_code == 0
     assert calls == ["schedule_all"]
+
+
+def test_cli_exits_when_config_reload_fails(monkeypatch, in_temp_dir: Path):
+    async def failing_reload(_config_file):
+        return False
+
+    monkeypatch.setattr(
+        cli,
+        "config",
+        SimpleNamespace(
+            reload_conf=failing_reload,
+            on_change=lambda *a, **k: None,
+            basedir=None,
+            nofail=True,
+        ),
+    )
+
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once"])
+
+    assert result.exit_code == 1
+
+
+def test_cli_play_url_branch(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    calls = []
+
+    class FakeEmbyManager:
+        def __init__(self):
+            pass
+
+        async def play_url(self, url):
+            calls.append(url)
+            return True
+
+    monkeypatch.setattr("embykeeper.emby.main.EmbyManager", FakeEmbyManager)
+
+    result = runner.invoke(
+        app,
+        ["--basedir", str(in_temp_dir), "--play-url", "https://example.com/web/#/details?id=abc"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["https://example.com/web/#/details?id=abc"]
+
+
+def test_cli_clean_branch(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    called = []
+
+    async def fake_cleaner():
+        called.append("cleaner")
+
+    monkeypatch.setattr("embykeeper.clean.cleaner", fake_cleaner)
+
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--clean"])
+
+    assert result.exit_code == 0
+    assert called == ["cleaner"]
+
+
+def test_cli_debug_notify_branch(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    called = []
+
+    async def fake_debug_notifier():
+        called.append("debug_notifier")
+
+    monkeypatch.setattr("embykeeper.notify.debug_notifier", fake_debug_notifier)
+
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--debug-notify"])
+
+    assert result.exit_code == 0
+    assert called == ["debug_notifier"]
+
+
+def test_cli_help_option(monkeypatch, in_temp_dir: Path):
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert result.output
+
+
+def test_cli_disable_color(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once", "--disable-color"])
+    assert result.exit_code == 0
+
+
+def test_cli_docker_env(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    monkeypatch.setenv("EK_IN_DOCKER", "1")
+    try:
+        result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once"])
+        assert result.exit_code == 0
+    finally:
+        monkeypatch.delenv("EK_IN_DOCKER", raising=False)
+
+
+def test_cli_debug_cron_flag(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once", "--debug-cron"])
+    assert result.exit_code == 0
+
+
+def test_cli_debug_verbosity_levels(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+
+    for flags in (["-d"], ["-dd"], ["-ddd"]):
+        result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once", *flags])
+        assert result.exit_code == 0, f"flags={flags} failed: {result.output}"
+
+
+def test_cli_handles_unexpected_reload_error(monkeypatch, in_temp_dir: Path):
+    async def failing_reload(_config_file):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        cli,
+        "config",
+        SimpleNamespace(
+            reload_conf=failing_reload,
+            on_change=lambda *a, **k: None,
+            basedir=None,
+            nofail=True,
+        ),
+    )
+
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once"])
+
+    assert result.exit_code == 1
+
+
+def test_cli_runs_exit_handlers(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+    called = []
+
+    async def fake_handler():
+        called.append("handler")
+
+    monkeypatch.setattr(cli.var, "exit_handlers", [fake_handler])
+
+    async def fake_cleaner():
+        pass
+
+    monkeypatch.setattr("embykeeper.clean.cleaner", fake_cleaner)
+
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--clean"])
+
+    assert result.exit_code == 0
+    assert called == ["handler"]
+
+
+def test_cli_exits_when_cache_unusable(monkeypatch, in_temp_dir: Path):
+    patch_cli_runtime(monkeypatch, [])
+
+    def boom_set(*a, **k):
+        raise RuntimeError("no cache dir")
+
+    monkeypatch.setattr(
+        "embykeeper.cache.cache",
+        SimpleNamespace(set=boom_set, get=lambda *a, **k: None, delete=lambda *a, **k: None),
+    )
+
+    result = runner.invoke(app, ["--basedir", str(in_temp_dir), "--once"])
+
+    assert "本地缓存读写失败" in result.output

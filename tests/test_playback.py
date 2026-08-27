@@ -150,3 +150,59 @@ def test_session_raises_stopped_error_when_stopped_report_fails(frozen_playback_
     client = FakePlaybackClient(stopped_error=EmbyStatusError("500"))
     with pytest.raises(EmbyStoppedReportError):
         run(client, ITEM)
+
+
+def test_session_runs_with_int_item_id(frozen_playback_random):
+    client = FakePlaybackClient()
+    assert run(client, 123, time=10) is True
+
+
+def test_session_raises_play_error_when_start_progress_fails(frozen_playback_random):
+    from embykeeper.emby.errors import EmbyStatusError
+
+    class FailingStartClient(FakePlaybackClient):
+        async def _request(self, method, path, _session_kwargs=None, **kwargs):
+            if path == "/Sessions/Playing/Progress":
+                raise EmbyStatusError("500")
+            return await super()._request(method, path, _session_kwargs=_session_kwargs, **kwargs)
+
+    with pytest.raises(EmbyPlayError) as exc_info:
+        run(FailingStartClient(), ITEM)
+    assert "无法开始播放" in str(exc_info.value)
+
+
+def test_session_raises_when_too_many_progress_errors(frozen_playback_random):
+    from embykeeper.emby.errors import EmbyStatusError
+
+    class LoopProgressFailingClient(FakePlaybackClient):
+        async def _request(self, method, path, _session_kwargs=None, **kwargs):
+            payload = kwargs.get("json") or {}
+            if (
+                path == "/Sessions/Playing/Progress"
+                and payload.get("EventName") == "TimeUpdate"
+                and payload.get("PositionTicks") != 5400000000  # 循环中的进度上报
+            ):
+                raise EmbyStatusError("500")
+            return await super()._request(method, path, _session_kwargs=_session_kwargs, **kwargs)
+
+    with pytest.raises(EmbyPlayError) as exc_info:
+        run(LoopProgressFailingClient(), ITEM, time=200)
+    assert "播放状态设定错误次数过多" in str(exc_info.value)
+
+
+def test_session_warns_when_stream_task_raises(frozen_playback_random, monkeypatch):
+    import embykeeper.emby.playback as playback
+
+    class BoomTask:
+        def cancel(self):
+            pass
+
+        def __await__(self):
+            async def _raise():
+                raise RuntimeError("boom")
+
+            return _raise().__await__()
+
+    monkeypatch.setattr(playback.asyncio, "create_task", lambda coro: coro.close() or BoomTask())
+    client = FakePlaybackClient()
+    assert run(client, ITEM) is True

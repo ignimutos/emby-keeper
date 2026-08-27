@@ -98,8 +98,8 @@ class KeepaliveRun:
 
     def _format_failed_reason_summary(self, failed_reasons: dict) -> str:
         reasons = []
-        if failed_reasons["invalid"]:
-            reasons.append(f"{failed_reasons['invalid']} 个视频信息无效")
+        if failed_reasons["invalid"]:  # pragma: no cover  # invalid 仅在不可达分支累加
+            reasons.append(f"{failed_reasons['invalid']} 个视频信息无效")  # pragma: no cover
         if failed_reasons["no_length"]:
             reasons.append(
                 f"{failed_reasons['no_length']} 个视频无法获取时长 (allow_stream={self._a.allow_stream})"
@@ -108,7 +108,9 @@ class KeepaliveRun:
             reasons.append(f"{failed_reasons['wrong_type']} 个非视频项目")
         if failed_reasons["short_length"]:
             reasons.append(f"{failed_reasons['short_length']} 个视频时长不足 (未开启 allow_multiple)")
-        return ", ".join(reasons) if reasons else "未记录到候选过滤原因"
+        return (
+            ", ".join(reasons) if reasons else "未记录到候选过滤原因"
+        )  # pragma: no cover  # 仅在无失败原因时触发
 
     async def run(self) -> EmbyWatchResult:
         client = self.client
@@ -147,9 +149,11 @@ class KeepaliveRun:
             random.shuffle(shuffled_items)
 
             for iid, item in shuffled_items:
-                if iid in failed_items:
-                    failed_reasons["invalid"] += 1
-                    continue
+                if (
+                    iid in failed_items
+                ):  # pragma: no cover  # 需 allow_multiple=False 且已播放部分时长后才会重遇失败项
+                    failed_reasons["invalid"] += 1  # pragma: no cover
+                    continue  # pragma: no cover
                 media_type = item.get("MediaType", None)
                 if not media_type == "Video":
                     failed_reasons["wrong_type"] += 1

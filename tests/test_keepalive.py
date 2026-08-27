@@ -221,3 +221,155 @@ def test_run_fails_when_retries_exhausted(frozen_random):
 
     assert result.success is False
     assert result.failure_stage == "播放中断"
+
+
+def test_run_allow_stream_synthesizes_runtime(frozen_random, monkeypatch):
+    import embykeeper.emby.keepalive as keepalive
+
+    monkeypatch.setattr(keepalive.random, "randint", lambda a, b: 600)
+    client = FakeClient(
+        account=make_account(allow_stream=True),
+        items={"abc123": {"Id": "abc123", "Name": "片", "MediaType": "Video", "RunTimeTicks": None}},
+        get_item_side_effect=[before_item(), after_item()],
+    )
+    result = sync(KeepaliveRun(client=client).run())
+
+    assert result.success is True
+
+
+def test_run_allow_multiple_plays_second_video(frozen_random, monkeypatch):
+    import embykeeper.emby.keepalive as keepalive
+
+    monkeypatch.setattr(keepalive.random, "randint", lambda a, b: 0)
+    item_short = {"Id": "s1", "Name": "短", "MediaType": "Video", "RunTimeTicks": 600000000}
+    item_long = {"Id": "l1", "Name": "长", "MediaType": "Video", "RunTimeTicks": 1200000000}
+
+    def before_after_gen():
+        while True:
+            yield before_item()
+            yield after_item()
+
+    client = FakeClient(
+        account=make_account(allow_multiple=True),
+        items={"s1": item_short, "l1": item_long},
+        watch_time=120,
+        get_item_side_effect=before_after_gen(),
+    )
+    result = sync(KeepaliveRun(client=client).run())
+
+    assert result.success is True
+    assert client._play.await_count == 2
+
+
+def test_run_retries_then_succeeds(frozen_random):
+    def play_fail_once(*args, **kwargs):
+        if not getattr(play_fail_once, "called", False):
+            play_fail_once.called = True
+            raise EmbyPlayError("boom")
+        return True
+
+    client = FakeClient(
+        account=make_account(),
+        items={"abc123": ITEM},
+        play_side_effect=play_fail_once,
+        get_item_side_effect=[before_item(), before_item(), after_item()],
+    )
+    result = sync(KeepaliveRun(client=client, max_retries=2).run())
+
+    assert result.success is True
+    assert client._play.await_count == 2
+
+
+def test_run_retries_connect_error(frozen_random):
+    from embykeeper.emby.errors import EmbyConnectError
+
+    def fail_once(*args, **kwargs):
+        if not getattr(fail_once, "called", False):
+            fail_once.called = True
+            raise EmbyConnectError("conn")
+        return True
+
+    client = FakeClient(
+        account=make_account(),
+        items={"abc123": ITEM},
+        play_side_effect=fail_once,
+        get_item_side_effect=[before_item(), before_item(), after_item()],
+    )
+    result = sync(KeepaliveRun(client=client, max_retries=2).run())
+
+    assert result.success is True
+    assert client._play.await_count == 2
+
+
+def test_run_success_when_play_count_missing(frozen_random):
+    after = {
+        **ITEM,
+        "UserData": {
+            "LastPlayedDate": "2026-04-29T15:08:12Z",
+            "PlaybackPositionTicks": 18360000000,
+        },
+    }
+    client = FakeClient(
+        account=make_account(),
+        items={"abc123": ITEM},
+        get_item_side_effect=[before_item(), after],
+    )
+    result = sync(KeepaliveRun(client=client).run())
+
+    assert result.success is True
+
+
+def test_run_multiple_loops_when_requirement_not_met(frozen_random, monkeypatch):
+    import embykeeper.emby.keepalive as keepalive
+
+    monkeypatch.setattr(keepalive.random, "randint", lambda a, b: 0)
+    item_short = {"Id": "s1", "Name": "短", "MediaType": "Video", "RunTimeTicks": 600000000}
+
+    def before_after_gen():
+        while True:
+            yield before_item()
+            yield after_item()
+
+    client = FakeClient(
+        account=make_account(allow_multiple=True),
+        items={"s1": item_short},
+        watch_time=120,
+        get_item_side_effect=before_after_gen(),
+    )
+    result = sync(KeepaliveRun(client=client).run())
+
+    assert result.success is True
+    assert client._play.await_count == 2
+
+
+def test_run_skips_wrong_media_type_and_succeeds(frozen_random):
+    client = FakeClient(
+        account=make_account(),
+        items={
+            "audio": {"Id": "audio", "Name": "音频", "MediaType": "Audio"},
+            "video": ITEM,
+        },
+        get_item_side_effect=[before_item(), after_item()],
+    )
+    result = sync(KeepaliveRun(client=client).run())
+
+    assert result.success is True
+
+
+def test_parse_date_malformed():
+    assert KeepaliveRun.parse_date("not-a-date") is None
+    assert KeepaliveRun.parse_date(None) is None
+    assert KeepaliveRun.parse_date("2026-04-29T15:08:12Z") is not None
+
+
+def test_run_reports_generic_error_in_play(frozen_random):
+    client = FakeClient(
+        account=make_account(),
+        items={"abc123": ITEM},
+        play_side_effect=RuntimeError("boom"),
+        get_item_side_effect=[before_item()],
+    )
+    result = sync(KeepaliveRun(client=client).run())
+
+    assert result.success is False
+    assert result.failure_stage == "播放中断"

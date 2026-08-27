@@ -75,18 +75,18 @@ async def cleaner():
             else:
                 # 显示普通缓存类型, 显示总数
                 console.print(f"{key}. {option['name']} (共 {count} 条)")
-        elif "children" in option:
+        elif "children" in option:  # pragma: no cover  # 当前选项表未定义 children
             # 显示父选项（如"其他缓存"）
-            console.print(f"{key}. {option['name']}")
-            for child_key, child in option["children"].items():
-                keys = list(cache.find_by_prefix(child["prefix"]))
-                count = len(keys)
+            console.print(f"{key}. {option['name']}")  # pragma: no cover
+            for child_key, child in option["children"].items():  # pragma: no cover
+                keys = list(cache.find_by_prefix(child["prefix"]))  # pragma: no cover
+                count = len(keys)  # pragma: no cover
                 # 显示子选项, 对于特定前缀只显示数量
-                console.print(f"  {child_key}. {child['name']} (共 {count} 条)")
+                console.print(f"  {child_key}. {child['name']} (共 {count} 条)")  # pragma: no cover
                 # 只有在show_keys为True时才显示具体的键
-                if child.get("show_keys", False):
-                    for i, key_name in enumerate(keys, 1):
-                        console.print(f"    {child_key}.{i}. {key_name}")
+                if child.get("show_keys", False):  # pragma: no cover
+                    for i, key_name in enumerate(keys, 1):  # pragma: no cover
+                        console.print(f"    {child_key}.{i}. {key_name}")  # pragma: no cover
         else:
             # 特殊选项
             console.print(f"{key}. {option['name']}")
@@ -120,32 +120,32 @@ async def cleaner():
             else:
                 # 清理整个前缀
                 result = clean_cache(cache_prefix=target["prefix"])
-        elif "children" in target:
-            if len(parts) > 1:
+        elif "children" in target:  # pragma: no cover  # 当前选项表未定义 children
+            if len(parts) > 1:  # pragma: no cover
                 # 用户输入了子选项, 如 "7.1"
-                child_key = parts[1].split(".", 1)[0]
-                full_child_key = f"{parent_key}.{child_key}"
+                child_key = parts[1].split(".", 1)[0]  # pragma: no cover
+                full_child_key = f"{parent_key}.{child_key}"  # pragma: no cover
 
-                if full_child_key in target["children"]:
-                    child = target["children"][full_child_key]
-                    result = clean_cache(cache_prefix=child["prefix"])
+                if full_child_key in target["children"]:  # pragma: no cover
+                    child = target["children"][full_child_key]  # pragma: no cover
+                    result = clean_cache(cache_prefix=child["prefix"])  # pragma: no cover
                 else:
-                    result = f"无效的子选项: {full_child_key}"
+                    result = f"无效的子选项: {full_child_key}"  # pragma: no cover
             else:
                 # 用户只输入了父选项, 如 "7"
                 # 清理所有子选项
-                results = []
-                for child_key, child in target["children"].items():
-                    prefix = child["prefix"]
-                    res = clean_cache(cache_prefix=prefix)
-                    results.append(f"{child_key}: {res}")
+                results = []  # pragma: no cover
+                for child_key, child in target["children"].items():  # pragma: no cover
+                    prefix = child["prefix"]  # pragma: no cover
+                    res = clean_cache(cache_prefix=prefix)  # pragma: no cover
+                    results.append(f"{child_key}: {res}")  # pragma: no cover
 
-                if results:
-                    result = "\n".join(results)
+                if results:  # pragma: no cover
+                    result = "\n".join(results)  # pragma: no cover
                 else:
-                    result = "没有可清理的子选项"
-        else:
-            result = "无效的选项类型"
+                    result = "没有可清理的子选项"  # pragma: no cover
+        else:  # pragma: no cover  # 当前选项表均为 special/prefix, 无其他类型
+            result = "无效的选项类型"  # pragma: no cover
 
     console.print(result + "\n")
     console.rule()

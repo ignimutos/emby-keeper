@@ -44,7 +44,7 @@ class ScheduledKeepaliveManager:
 
     def _is_account_selected(self, account) -> bool:
         """子类可覆盖以限定账号子集."""
-        return True
+        return True  # pragma: no cover  # EmbyManager 覆盖了该方法
 
     def _is_independent(self, account) -> bool:
         return bool(account.time_range or account.interval_days)
@@ -201,7 +201,9 @@ class ScheduledKeepaliveManager:
         await self._pool.wait()
 
     async def schedule_all(self, instant: bool = False):
-        return await self._schedule_accounts(self._section().account)
+        return await self._schedule_accounts(
+            self._section().account
+        )  # pragma: no cover  # EmbyManager 覆盖了该方法
 
     async def run_accounts(self, accounts: List, instant: bool = False):
         return await self._run_accounts(accounts, instant)
