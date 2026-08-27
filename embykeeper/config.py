@@ -25,8 +25,6 @@ logger = logger.bind(scheme="config")
 
 class ConfigManager(ProxyBase):
     __noproxy__ = (
-        "windows",
-        "public",
         "basedir",
         "_basedir",
         "_conf_file",
@@ -36,9 +34,6 @@ class ConfigManager(ProxyBase):
     )
 
     def __init__(self, conf_file=None):
-        self.windows = False
-        self.public = False
-
         self._basedir = None
         self._conf_file = conf_file
         self._cache = None
@@ -144,7 +139,6 @@ class ConfigManager(ProxyBase):
         from faker import Faker
         from faker.providers import internet, profile
 
-        from .telegram.dynamic import get_names
         from . import __version__, __url__
 
         fake = Faker()
@@ -182,12 +176,15 @@ class ConfigManager(ProxyBase):
         c.add(comment("模拟观看的随机时长范围 (秒), 账号未单独配置时使用全局设置:"))
         c["time"] = default_emby_account.time
         c.add(nl())
+        c.add(comment("是否校验 HTTPS 证书, 默认 false (自签证书服务器可正常访问):"))
+        c["verify"] = default_config.emby.verify
+        c.add(nl())
         c.add(comment("默认 Emby 指纹, 账号未单独配置时使用以下值:"))
         c["client"] = "Hills"
         c.add(nl())
-        c["device"] = "emby-keeper"
-        c.add(nl())
-        c["device_id"] = "0123456789abcdef"
+        c.add(comment("设备与设备 ID: 默认不配置, 程序会自动生成并缓存 (每次安装随机, 避免使用固定值):"))
+        c.add(comment(item({"device": "my-device"}).as_string()))
+        c.add(comment(item({"device_id": "my-device-id"}).as_string()))
         c.add(nl())
         c["client_version"] = "1.6.1"
         c.add(nl())
@@ -209,17 +206,18 @@ class ConfigManager(ProxyBase):
         a["password"] = fake.password()
         a.add(nl())
         a.add(comment("以下为进阶配置, 请取消注释 (删除左侧的 #) 以使用:"))
-        a.add(nl())
         a.add(comment("模拟观看的随机时长范围 (秒), 默认使用全局设置 emby.time:"))
         a.add(comment(item({"time": default_emby_account.time}).as_string()))
         a.add(comment("每隔几天进行保活, 默认使用全局设置 emby.interval_days:"))
         a.add(comment(item({"interval_days": default_config.emby.interval_days}).as_string()))
         a.add(comment("每次进行保活的当日时间范围, 默认使用全局设置 emby.time_range:"))
         a.add(comment(item({"time_range": default_config.emby.time_range}).as_string()))
+        a.add(comment("是否校验 HTTPS 证书, 默认使用全局设置 emby.verify:"))
+        a.add(comment(item({"verify": True}).as_string()))
         a.add(comment("以下指纹设置默认使用全局 emby.*; 如需单账号覆盖请取消注释:"))
         a.add(comment(item({"client": "Hills"}).as_string()))
-        a.add(comment(item({"device": "emby-keeper"}).as_string()))
-        a.add(comment(item({"device_id": "0123456789abcdef"}).as_string()))
+        a.add(comment(item({"device": "my-device"}).as_string()))
+        a.add(comment(item({"device_id": "my-device-id"}).as_string()))
         a.add(comment(item({"client_version": "1.6.1"}).as_string()))
         a.add(comment(item({"useragent": "Hills/1.6.1 (android; 15)"}).as_string()))
         a.add(comment("无法获取视频长度时, 依然允许播放 (默认最大播放 10 分钟左右, 可能播放超出实际长度):"))
@@ -230,244 +228,14 @@ class ConfigManager(ProxyBase):
         a.add(comment(item({"enabled": False}).as_string()))
         doc["emby"] = c
 
-        doc.add(comment(f"第 2 个账号, 如需使用请将该段取消注释并修改, 也可以添加更多账号."))
-        a = item(
-            {
-                "emby": {
-                    "account": [
-                        {
-                            "url": fake.url(["https"]).rstrip("/") + ":443",
-                            "username": fake.profile()["username"],
-                            "password": fake.password(),
-                        }
-                    ]
-                }
-            }
-        )
-        for line in a.as_string().strip().split("\n"):
-            doc.add(comment(line))
-
         doc.add(nl())
-        doc.add(comment("=" * 80))
-        doc.add(comment("Telegram 机器人签到相关设置"))
-        doc.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#checkiner-子项"))
-        doc.add(comment("=" * 80))
-        c = item({})
-        c.add(nl())
-        c.add(
-            comment(
-                '每次进行进行 Telegram 签到的当日时间范围, 可以为单个时间 ("8:00AM") 或时间范围 ("<8:00AM,10:00AM>"):'
-            )
-        )
-        c["time_range"] = default_config.checkiner.time_range
-        c.add(nl())
-        c.add(comment("各个站点签到将在开始后, 等待一定时间随机启动, 使各站点错开 (分钟):"))
-        c["random_start"] = default_config.checkiner.random_start
-        c.add(nl())
-        c.add(comment("每个站点签到的最大超时时间 (秒):"))
-        c["timeout"] = default_config.checkiner.timeout
-        c.add(nl())
-        c.add(comment("各站点最大可重试次数 (部分站点出于安全考虑有独立的设置):"))
-        c["retries"] = 4
-        c.add(nl())
-        c.add(comment("最大可同时进行的站点数:"))
-        c["concurrency"] = 1
-        c.add(nl())
-        c.add(comment("每隔几天进行签到:"))
-        c["interval_days"] = 1
-        doc["checkiner"] = c
-        c.add(nl())
-
-        c.add(comment("=" * 80))
-        c.add(comment("Telegram 账号, 您可以重复该片段多次以增加多个账号."))
-        c.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#telegram-account-子项"))
-        c.add(comment("=" * 80))
-        c = item({"account": [{}]})
-        a: InlineTable = c["account"][0]
-        a.comment(f"第 1 个账号")
-        a.add(nl())
-        a.add(comment('带国家区号的账户手机号, 一般为 "+86..."'))
-        a["phone"] = f'+861{fake.numerify(text="##########")}'
-        a.add(nl())
-        a.add(comment("启用机器人签到系列功能, 默认启用, 设置为 false 以禁用:"))
-        a["checkiner"] = True
-        a.add(nl())
-        a.add(comment("启用群组监控系列功能, 包括抢邀请码和回答问题等, 默认禁用, 设置为 true 以启用:"))
-        a["monitor"] = False
-        a.add(nl())
-        a.add(comment("启用自动水群系列功能, 风险较高, 默认禁用, 设置为 true 以启用:"))
-        a["messager"] = False
-        a.add(nl())
-        a.add(comment("启用定时抢注功能, 默认禁用, 设置为 true 以启用:"))
-        a["registrar"] = False
-        a.add(nl())
-        doc["telegram"] = c
-        doc.add(comment("针对该账号的独特设置, 如需使用请将该段取消注释并修改. 详见 site 项和 checkiner 项."))
-        a_specific = item(
-            {
-                "telegram": {
-                    "account": [
-                        {
-                            "site": {
-                                "checkiner": ["all"],
-                            },
-                            "checkiner_config": {
-                                "interval_days": 1,
-                            },
-                        }
-                    ]
-                }
-            }
-        )
-        for line in a_specific.as_string().strip().split("\n")[1:]:
-            doc.add(comment(line))
-
-        doc.add(nl())
-
-        doc.add(comment(f"第 2 个账号, 如需使用请将该段取消注释并修改, 也可以添加更多账号."))
-        a = item(
-            {
-                "telegram": {
-                    "account": [
-                        {
-                            "phone": f'+861{fake.numerify(text="##########")}',
-                            "checkiner": True,
-                            "monitor": False,
-                            "messager": False,
-                            "registrar": False,
-                        }
-                    ]
-                }
-            }
-        )
-        for line in a.as_string().strip().split("\n"):
-            doc.add(comment(line))
-
-        doc.add(nl())
-        doc.add(comment("=" * 80))
-        doc.add(comment("定时抢注相关设置"))
-        doc.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#registrar-子项"))
-        doc.add(comment("=" * 80))
-        c = item({})
-        c.add(nl())
-        c.add(comment("最大可同时进行的注册任务数:"))
-        c["concurrency"] = default_config.registrar.concurrency
-        c.add(nl())
-        c.add(comment("各站点注册设置:"))
-        c.add(nl())
-        c.add(comment("案例 (站点每天定时抢注):"))
-        registrar1_lines = [
-            '[registrar."templ_a<XiguaEmbyBot>"]',
-            'times = ["9:00AM", "9:00PM"]',
-            "timeout = 120",
-            "retries = 1",
-        ]
-        for line in registrar1_lines:
-            c.add(comment(line))
-        c.add(nl())
-        c.add(comment("案例 (站点间隔抢注):"))
-        registrar2_lines = [
-            '[registrar."templ_a<XiguaEmbyBot>"]',
-            "interval_minutes = 2",
-            "timeout = 120",
-            "retries = 1",
-        ]
-        for line in registrar2_lines:
-            c.add(comment(line))
-        doc["registrar"] = c
-        c.add(nl())
-
-        doc.add(comment("=" * 80))
-        doc.add(comment("站点相关设置"))
-        doc.add(comment("当您需要禁用某些站点时, 请将该段取消注释并修改."))
-        doc.add(comment(f"该部分内容是根据 {__product__.capitalize()} {__version__} 生成的."))
-        doc.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#site-子项"))
-        doc.add(comment("=" * 80))
-        doc.add(nl())
-        doc.add(comment(f'使用 "all" 代表所有签到器, "sgk" 以代表所有社工库签到器.'))
-        doc.add(nl())
-        doc.add(comment("案例 (启用所有站点, 除了社工库站点):"))
-        site = item(
-            {
-                "site": {
-                    "checkiner": ["all", "-sgk"],
-                }
-            }
-        )
-        for line in site.as_string().strip().split("\n"):
-            doc.add(comment(line))
-        doc.add(nl())
-        doc.add(comment("案例 (启用默认站点, 额外增加 temby 站点):"))
-        site = item(
-            {
-                "site": {
-                    "checkiner": ["+temby"],
-                }
-            }
-        )
-        for line in site.as_string().strip().split("\n"):
-            doc.add(comment(line))
-        doc.add(nl())
-        doc.add(comment("可以分别设置各个组件 (机器人签到 / 群组监控 / 自动水群) 的站点:"))
-        site = item(
-            {
-                "site": {
-                    "checkiner": ["-terminus", "-temby"],
-                    "monitor": ["-misty"],
-                    "messager": ["pornfans"],
-                    "registrar": ["templ_a<XiguaEmbyBot>"],
-                }
-            }
-        )
-        for line in site.as_string().strip().split("\n"):
-            doc.add(comment(line))
-        doc.add(nl())
-        site = item(
-            {
-                "site": {
-                    "checkiner": get_names("checkiner"),
-                    "monitor": get_names("monitor"),
-                    "messager": get_names("messager"),
-                    "registrar": get_names("registrar"),
-                }
-            }
-        )
-        doc.add(comment(f"默认启用站点:"))
-        for line in site.as_string().strip().split("\n"):
-            doc.add(comment(line))
-        doc.add(nl())
-        site = item(
-            {
-                "site": {
-                    "checkiner": get_names("checkiner", allow_ignore=True),
-                    "monitor": get_names("monitor", allow_ignore=True),
-                    "messager": get_names("messager", allow_ignore=True),
-                    "registrar": get_names("registrar", allow_ignore=True),
-                }
-            }
-        )
-        doc.add(comment(f"全部可用站点:"))
-        for line in site.as_string().strip().split("\n"):
-            doc.add(comment(line))
-        doc.add(nl())
-
         doc.add(comment("=" * 80))
         doc.add(comment("代理相关设置"))
-        doc.add(
-            comment("代理设置, Emby 和 Telegram 均将通过此代理连接, 服务器位于国内时请配置代理并取消注释")
-        )
+        doc.add(comment("代理设置, Emby 将通过此代理连接, 服务器位于国内时请配置代理并取消注释"))
         doc.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#proxy-子项"))
         doc.add(comment("=" * 80))
         doc.add(nl())
-        proxy = item(
-            {
-                "proxy": {
-                    "hostname": "127.0.0.1",
-                    "port": 1080,
-                    "scheme": "socks5",
-                }
-            }
-        )
+        proxy = item({"proxy": {"hostname": "127.0.0.1", "port": 1080, "scheme": "socks5"}})
         proxy["proxy"]["scheme"].comment("可选: http / socks5")
         for line in proxy.as_string().strip().split("\n"):
             doc.add(comment(line))
@@ -479,72 +247,14 @@ class ConfigManager(ProxyBase):
         doc.add(comment("=" * 80))
         c = item({})
         c.add(nl())
-        c.add(comment("启用签到/保活结果的日志推送:"))
+        c.add(comment("启用保活结果的日志推送:"))
         c["enabled"] = True
-        c.add(comment("使用第几个 Telegram 账号进行推送, 从 1 开始计数:"))
-        c["account"] = 1
-        c.add(comment("默认情况下, 日志推送将由 @embykeeper_bot 按其设置统一推送, 设置为 true 以立刻推送"))
-        c["immediately"] = False
-        c.add(comment("默认情况下, 启动时立刻执行的一次签到/保活不会推送消息, 设置为 true 以推送"))
-        c["once"] = False
-        c.add(comment("推送方式, 可选: telegram (默认), apprise"))
-        c["method"] = "telegram"
-        c.add(comment('Apprise 推送地址, 仅当 method = "apprise" 时有效'))
-        c["apprise_uri"] = ""
+        c.add(comment("推送方式, 本分支仅支持 apprise:"))
+        c["method"] = "apprise"
+        c.add(comment("Apprise 推送地址, 支持 telegram / email / webhook 等, 详见 apprise 文档:"))
+        c["apprise_uri"] = "tgram://bot_token/chat_id"
         doc["notifier"] = c
         doc.add(nl())
-
-        doc.add(comment("=" * 80))
-        doc.add(comment("Subsonic 保活相关设置 (包括 Navidrome 和其他支持 Subsonic API 的音乐服站点)"))
-        doc.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#subsonic-子项"))
-        doc.add(comment("=" * 80))
-        c = item({})
-        c.add(nl())
-        c.add(
-            comment(
-                '每次进行进行 Subsonic 保活的当日时间范围, 可以为单个时间 ("8:00AM") 或时间范围 ("<8:00AM,10:00AM>"):'
-            )
-        )
-        c["time_range"] = default_config.subsonic.time_range
-        c.add(nl())
-        c.add(comment("每隔几天进行 Subsonic 保活:"))
-        c["interval_days"] = default_config.subsonic.interval_days
-        c.add(nl())
-        c.add(comment("最大可同时进行的站点数:"))
-        c["concurrency"] = default_config.subsonic.concurrency
-        doc["subsonic"] = c
-
-        doc.add(nl())
-        doc.add(comment("=" * 80))
-        doc.add(comment("Subsonic 账号, 您可以重复该片段多次以增加多个账号, 如需使用, 请取消注释."))
-        doc.add(comment(f"详见: https://emby-keeper.github.io/guide/配置文件#subsonic-account-子项"))
-        doc.add(comment("=" * 80))
-        doc.add(nl())
-
-        cd = item({})
-        cd["subsonic"] = {"account": [{}, {}]}
-        c = cd["subsonic"]
-        for i in range(2):
-            a: InlineTable = c["account"][i]
-            a.comment(f"第 {i + 1} 个账号")
-            if not i:
-                a.add(nl())
-                a.add(comment("站点域名和端口:"))
-            a["url"] = fake.url(["https"]).rstrip("/") + ":443"
-            if not i:
-                a.add(nl())
-                a.add(comment("用户名和密码:"))
-            a["username"] = fake.profile()["username"]
-            a["password"] = fake.password()
-            if not i:
-                a.add(nl())
-                a.add(comment("模拟观看的随机时长范围 (秒), 可以为单个数字 (120) 或时间范围 ([120, 240]):"))
-            a["time"] = default_emby_account.time
-            if not i:
-                a.add(nl())
-
-        for line in cd.as_string().strip().split("\n"):
-            doc.add(comment(line))
 
         return dumps(doc)
 
@@ -598,10 +308,7 @@ class ConfigManager(ProxyBase):
         if env_config:
             cfg_dict.update(self.load_config_str(env_config))
         else:
-            if self.windows:
-                default_conf_file = self.basedir / "config.toml"
-            else:
-                default_conf_file = Path("config.toml")
+            default_conf_file = Path("config.toml")
             if conf_file:
                 conf_file = Path(conf_file)
             elif self._conf_file:

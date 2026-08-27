@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 import warnings
@@ -108,10 +109,14 @@ def test_create_config_includes_global_emby_fingerprint(in_temp_dir: Path):
 
     assert "time = [300, 600]" in emby_section
     assert 'client = "Hills"' in emby_section
-    assert "device = " in emby_section
-    assert "device_id = " in emby_section
+    assert "自动生成" in emby_section  # device/device_id 不再内置固定值
     assert 'client_version = "1.6.1"' in emby_section
     assert 'useragent = "Hills/1.6.1 (android; 15)"' in emby_section
+    # 示例不应包含生效的固定 device/device_id (每台安装自动生成)
+    active_device = [
+        line for line in result.stdout.splitlines() if re.match(r"^\s*(device|device_id)\s*=", line)
+    ]
+    assert active_device == []
     assert result.exit_code == 0
 
 

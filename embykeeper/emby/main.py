@@ -7,7 +7,7 @@ from datetime import datetime
 from loguru import logger
 
 from embykeeper.config import config
-from embykeeper.utils import show_exception, truncate_str
+from embykeeper.utils import redact_headers, show_exception, truncate_str
 from embykeeper.runinfo import RunContext, RunStatus
 from embykeeper.var import console
 from embykeeper.schema import EmbyAccount
@@ -83,7 +83,7 @@ class EmbyManager(ScheduledKeepaliveManager):
                 return ctx.finish(RunStatus.FAIL, "登陆失败")
             emby.log.info("使用以下 Headers:")
             console.rule("Headers")
-            headers = emby.build_headers()
+            headers = redact_headers(emby.build_headers())
             for k, v in headers.items():
                 console.print(f"{k.title()}: {v}")
             console.rule()
@@ -133,8 +133,10 @@ class EmbyManager(ScheduledKeepaliveManager):
         ctx = RunContext.prepare(description="使用全局设置的 Emby 统一保活")
         ctx.start(RunStatus.INITIALIZING)
 
-        def build_failed_result(account: EmbyAccount, stage: str) -> EmbyWatchResult:
-            return EmbyWatchResult(account_spec=self.get_spec(account), success=False, failure_stage=stage)
+        def build_failed_result(account: EmbyAccount, stage: str, warning: str = None) -> EmbyWatchResult:
+            return EmbyWatchResult(
+                account_spec=self.get_spec(account), success=False, failure_stage=stage, warning=warning
+            )
 
         async def watch_wrapper(account: EmbyAccount, sem):
             async with sem:
@@ -179,11 +181,11 @@ class EmbyManager(ScheduledKeepaliveManager):
                     return account, await emby.watch()
                 except EmbyError as e:
                     emby.log.warning(f"保活失败: {e}.")
-                    return account, build_failed_result(account, "获取视频失败")
+                    return account, build_failed_result(account, "获取视频失败", warning=str(e))
                 except Exception as e:
                     emby.log.warning(f"保活失败: {e}")
                     show_exception(e, regular=False)
-                    return account, build_failed_result(account, "开始播放失败")
+                    return account, build_failed_result(account, "开始播放失败", warning=str(e))
 
         tasks = [asyncio.create_task(watch_wrapper(account, sem)) for account in accounts if account.enabled]
         if not tasks:

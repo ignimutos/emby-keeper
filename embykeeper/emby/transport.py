@@ -19,16 +19,29 @@ from loguru import logger
 from curl_cffi import CurlHttpVersion
 from curl_cffi.requests import AsyncSession, Response, RequestsError
 
-from embykeeper.utils import get_proxy_str, show_exception
+from embykeeper.utils import get_proxy_str
 from embykeeper.cache import cache
+from embykeeper.crypto import encrypt_credential
 
 from embykeeper.emby.errors import (
     EmbyConnectError,
     EmbyLoginError,
+    EmbyPlayError,
     EmbyStatusError,
 )
 
 logger = logger.bind(scheme="embywatcher")
+
+
+def _parse_json(resp: Response) -> dict:
+    """解析 JSON 响应; 服务器返回非 JSON (如网关错误页/Cloudflare 验证页) 时给出可读错误."""
+    try:
+        return resp.json()
+    except ValueError:
+        raise EmbyStatusError(
+            f"服务器返回了非 JSON 响应 (URL = {getattr(resp, 'url', '?')}, HTTP {resp.status_code}), "
+            "可能为网关错误页或 Cloudflare 验证页"
+        )
 
 
 class EmbyTransport:
@@ -59,14 +72,9 @@ class EmbyTransport:
 
     def _get_session(self, **overrides) -> AsyncSession:
         owner = self.owner
-        cookies = {}
-        if owner.cf_clearance:
-            cookies["cf_clearance"] = owner.cf_clearance
-
         session_kwargs = dict(
-            verify=False,
+            verify=owner.verify,
             headers=self.build_headers(),
-            cookies=cookies,
             proxy=get_proxy_str(owner.proxy, curl=True),
             timeout=10.0,
             impersonate="chrome",
@@ -133,13 +141,12 @@ class EmbyTransport:
                     elif resp.status_code in (502, 503, 504):
                         await asyncio.sleep(random.random() * 2 + 0.5)
                         continue
-                    elif resp.status_code == 403 and (
-                        "cf-wrapper" in resp.text or "Just a moment" in resp.text
+                    elif resp.status_code == 403 or (
+                        not kw.get("stream") and ("cf-wrapper" in resp.text or "Just a moment" in resp.text)
                     ):
-                        if owner.cf_clearance:
-                            raise EmbyStatusError("访问失败: Cloudflare 验证码解析后依然有验证")
-                        await owner.use_cfsolver()
-                        continue
+                        raise EmbyStatusError(
+                            "访问失败: 服务器返回 HTTP 403 或 Cloudflare 验证页 (可能启用了 Cloudflare 保护)"
+                        )
                     elif not resp.ok and not _login:
                         raise EmbyStatusError(f"访问失败: 异常 HTTP 代码 {resp.status_code} (URL = {url})")
                     else:
@@ -186,66 +193,25 @@ class EmbyTransport:
         owner = self.owner
         length = 0
         last_err_time = datetime.now()
+        consecutive_errors = 0
         while True:
             resp = await owner._open_stream_with_fallback(url, length, play_session_id)
             try:
                 async for chunk in resp.aiter_content(chunk_size=1024):
                     length += len(chunk)
                     await asyncio.sleep(random.random())
-                    if random.random() < 0.01:
-                        continue
                 return
             except RequestsError:
                 if (datetime.now() - last_err_time).total_seconds() > 5:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 5:
+                        raise EmbyPlayError(f"流媒体访问连续失败 {consecutive_errors} 次, 放弃播放.")
                     owner.log.debug("流媒体文件访问错误, 正在重试.")
                     last_err_time = datetime.now()
                     continue
                 raise
             finally:
                 await resp.aclose()
-
-    # --- Cloudflare ---
-
-    async def use_cfsolver(self):
-        from embykeeper.cloudflare import get_cf_clearance
-
-        owner = self.owner
-        if not owner.a.cf_challenge:
-            if owner.proxy:
-                owner.log.warning(
-                    f"该站点已启用 Cloudflare 保护, 请尝试浏览器以同样的代理访问: {owner.a.url}"
-                    "以解除 Cloudflare IP 限制, 然后再次运行.\n"
-                    '或者, 高级用户可以使用 "cf_challenge = true" 配置项以允许尝试解析验证码.'
-                )
-            else:
-                owner.log.warning(
-                    f'该站点已启用 Cloudflare 保护, 请使用 "cf_challenge = true" 配置项以允许尝试解析验证码.'
-                )
-        owner.log.info(f"该站点已启用 Cloudflare 保护, 即将请求解析.")
-        if owner.proxy:
-            if owner.proxy.scheme != "socks5":
-                owner.log.warning(
-                    f"该站点验证解析仅支持 SOCKS5 代理, 由于当前代理协议不支持, 将尝试不使用代理."
-                )
-                owner.a.use_proxy = False
-            else:
-                owner.log.info(
-                    f"验证码解析将使用代理, 可能导致解析失败, 若失败请使用"
-                    '"use_proxy = false" 以禁用该站点的代理.'
-                )
-        try:
-            cf_clearance, useragent = await get_cf_clearance(owner.a.url, owner.proxy)
-            if not cf_clearance:
-                owner.log.warning(f"Cloudflare 验证码解析失败.")
-                return False
-            else:
-                owner.cf_clearance = cf_clearance
-                owner.useragent = useragent
-                return True
-        except Exception as e:
-            owner.log.warning(f"Cloudflare 验证码解析时出现错误.")
-            show_exception(e, regular=False)
-            return False
 
     # --- 认证 ---
 
@@ -276,7 +242,7 @@ class EmbyTransport:
             owner.log.warning(f"登陆时出现错误 ({resp.status_code}), 执行失败.")
             return None
 
-        user: dict = resp.json()
+        user: dict = _parse_json(resp)
         owner._token = user.get("AccessToken", None)
         owner._user_id = user.get("User", {}).get("Id")
         if owner.token and owner.user_id:
@@ -284,5 +250,8 @@ class EmbyTransport:
                 "token": owner.token,
                 "userid": owner.user_id,
             }
-            cache.set(f"emby.credential.{owner.hostname}.{owner.a.username}", cache_data)
+            cache.set(
+                f"emby.credential.{owner.hostname}.{owner.a.username}",
+                encrypt_credential(cache_data, owner.a.password),
+            )
             return owner.token

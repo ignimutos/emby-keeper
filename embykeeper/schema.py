@@ -61,57 +61,12 @@ class ProxyConfig(ConfigModel):
     password: Optional[str] = None
 
 
-class CheckinerConfig(ConfigModel):
-    time_range: Optional[UseStr] = DEFAULT_TIME_RANGE
-    interval_days: Optional[UseStr] = "1"
-    timeout: Optional[int] = 120
-    retries: Optional[int] = 4
-    concurrency: Optional[int] = 1
-    random_start: Optional[int] = 60
-
-    model_config = {"extra": "allow"}
-
-    def get_site_config(self, site: str) -> Dict[str, Any]:
-        return getattr(self, site, {})
-
-
-class MonitorConfig(ConfigModel):
-    model_config = {"extra": "allow"}
-
-    def get_site_config(self, site: str) -> Dict[str, Any]:
-        return getattr(self, site, {})
-
-
-class MessagerConfig(ConfigModel):
-    model_config = {"extra": "allow"}
-
-    def get_site_config(self, site: str) -> Dict[str, Any]:
-        return getattr(self, site, {})
-
-
-class RegistrarConfig(ConfigModel):
-    concurrency: Optional[int] = 1
-
-    model_config = {"extra": "allow"}
-
-    def get_site_config(self, site: str) -> Dict[str, Any]:
-        return getattr(self, site, {})
-
-
 class NotifierConfig(ConfigModel):
     enabled: Optional[bool] = False
-    account: Optional[Union[int, str]] = 1
     immediately: Optional[bool] = False
     once: Optional[bool] = False
-    method: Optional[str] = "telegram"
+    method: Optional[str] = "apprise"
     apprise_uri: Optional[str] = None
-
-
-class SiteConfig(ConfigModel):
-    checkiner: Optional[List[str]] = None
-    monitor: Optional[List[str]] = None
-    messager: Optional[List[str]] = None
-    registrar: Optional[List[str]] = None
 
 
 class MediaServerBaseConfig(ConfigModel):
@@ -134,8 +89,8 @@ class EmbyAccount(ConfigModel):
     device_id: Optional[str] = None
     allow_multiple: Optional[bool] = True
     allow_stream: Optional[bool] = False
-    cf_challenge: Optional[bool] = True
     use_proxy: Optional[bool] = True
+    verify: Optional[bool] = None
     play_id: Optional[str] = None
     enabled: Optional[bool] = True
 
@@ -159,171 +114,49 @@ class EmbyConfig(MediaServerBaseConfig):
     device_id: Optional[str] = None
     client_version: Optional[str] = None
     useragent: Optional[str] = None
+    verify: Optional[bool] = False
     account: Optional[List[EmbyAccount]] = []
-
-
-class SubsonicAccount(ConfigModel):
-    url: UseHttpUrl
-    username: str
-    password: str
-    name: str = None
-    time: Optional[Union[int, List[int]]] = None
-    useragent: Optional[str] = None
-    client: Optional[str] = None
-    client_version: Optional[str] = None
-    use_proxy: Optional[bool] = True
-    enabled: Optional[bool] = True
-
-    # 站点单独配置
-    interval_days: Optional[Union[int, str]] = None
-    time_range: Optional[str] = None
-
-    # 向后兼容字段
-    ua: Optional[str] = None
-    version: Optional[str] = None
-
-
-class SubsonicConfig(MediaServerBaseConfig):
-    account: Optional[List[SubsonicAccount]] = []
-
-
-class TelegramAccount(ConfigModel):
-    phone: str = Field(description="Telegram phone number")
-
-    @model_validator(mode="before")
-    @classmethod
-    def clean_phone(cls, values):
-        if isinstance(values, dict) and "phone" in values:
-            values["phone"] = values["phone"].replace(" ", "")
-        return values
-
-    checkiner: Optional[bool] = True
-    monitor: Optional[bool] = False
-    messager: Optional[bool] = False
-    registrar: Optional[bool] = False
-    api_id: Optional[str] = None
-    api_hash: Optional[str] = None
-    session: Optional[str] = None
-    enabled: Optional[bool] = True
-
-    # 账号单独配置
-    site: Optional[SiteConfig] = None
-    checkiner_config: Optional[CheckinerConfig] = None
-    registrar_config: Optional[RegistrarConfig] = None
-
-    def get_config_key(self):
-        import hashlib
-
-        unique_str = f"{self.phone}:{self.api_id or ''}:{self.api_hash or ''}"
-        hash_value = hashlib.sha256(unique_str.encode()).hexdigest()[:8]
-        return f"{self.phone}/{hash_value}"
-
-    @staticmethod
-    def get_phone_masked(phone: str):
-        phone_len = len(phone)
-        visible_part = max(1, phone_len // 3)
-        return phone[:visible_part] + "*" * (phone_len - visible_part * 2) + phone[-visible_part:]
-
-
-class TelegramConfig(ConfigModel):
-    account: Optional[List[TelegramAccount]] = []
-    use_proxy: Optional[bool] = True
-
-
-class BotConfig(ConfigModel):
-    token: str
 
 
 class Config(ConfigModel):
     alias_map: ClassVar[Dict[str, str]] = {
         "emby.time_range": "watchtime",
         "emby.concurrency": "watch_concurrent",
-        "subsonic.time_range": "listentime",
-        "subsonic.concurrency": "listen_concurrent",
-        "checkiner.time_range": "time",
-        "checkiner.timeout": "timeout",
-        "checkiner.retries": "retries",
-        "checkiner.concurrency": "concurrent",
-        "checkiner.random_start": "random",
         "emby.interval_days": "interval",
-        "subsonic.interval_days": "interval",
-        "site": "service",
     }
 
-    mongodb: Optional[str] = None
     basedir: Optional[str] = None
     nofail: Optional[bool] = True
     noexit: Optional[bool] = False
     debug_cron: Optional[bool] = False
     proxy: Optional[ProxyConfig] = None
     emby: Optional[EmbyConfig] = EmbyConfig()
-    subsonic: Optional[SubsonicConfig] = SubsonicConfig()
-    checkiner: Optional[CheckinerConfig] = CheckinerConfig()
-    monitor: Optional[MonitorConfig] = MonitorConfig()
-    messager: Optional[MessagerConfig] = MessagerConfig()
-    registrar: Optional[RegistrarConfig] = RegistrarConfig()
-    telegram: Optional[TelegramConfig] = TelegramConfig()
     notifier: Optional[NotifierConfig] = NotifierConfig()
-    site: Optional[SiteConfig] = None
 
     # 向后兼容字段
-    time: Optional[str] = None
     watchtime: Optional[str] = None
-    listentime: Optional[str] = None
     interval: Optional[Union[int, str]] = None
-    timeout: Optional[int] = None
-    retries: Optional[int] = None
-    concurrent: Optional[int] = None
     watch_concurrent: Optional[int] = None
-    listen_concurrent: Optional[int] = None
-    random: Optional[int] = None
-    notify_immediately: Optional[bool] = None
-    service: Optional[SiteConfig] = None
-
-    # 调试字段
-    bot: Optional[BotConfig] = None
 
     @model_validator(mode="before")
     @classmethod
     def handle_aliases(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        for service in ["emby", "subsonic", "telegram"]:
-            if service in values and isinstance(values[service], list):
-                if service == "telegram":
-                    # Convert telegram account fields
-                    for account in values[service]:
-                        if "send" in account:
-                            account["messager"] = account.pop("send")
-                        if "checkin" in account:
-                            account["checkiner"] = account.pop("checkin")
-                if service == "emby":
-                    # Convert emby account fields
-                    for account in values[service]:
-                        if "ua" in account:
-                            account["useragent"] = account.pop("ua")
-                if service == "subsonic":
-                    # Convert subsonic account fields
-                    for account in values[service]:
-                        if "ua" in account:
-                            account["useragent"] = account.pop("ua")
-                        if "version" in account:
-                            account["client_version"] = account.pop("version")
-                values[service] = {"account": values[service]}
+        if "emby" in values and isinstance(values["emby"], list):
+            for account in values["emby"]:
+                if "ua" in account:
+                    account["useragent"] = account.pop("ua")
+            values["emby"] = {"account": values["emby"]}
 
         if "notifier" in values:
             notifier_value = values["notifier"]
             if isinstance(notifier_value, str):
                 values["notifier"] = {
                     "enabled": True,
-                    "account": notifier_value,
+                    "apprise_uri": notifier_value,
                 }
             elif isinstance(notifier_value, bool):
                 values["notifier"] = {
                     "enabled": notifier_value,
-                }
-            elif isinstance(notifier_value, int):
-                values["notifier"] = {
-                    "enabled": notifier_value > 0,
-                    "account": notifier_value,
                 }
 
         for new_field, old_field in cls.alias_map.items():

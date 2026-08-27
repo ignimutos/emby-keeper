@@ -1,6 +1,0 @@
-{
-    "title": "Embykeeper",
-    "description": "An automation tool for Emby server activity keeping and Telegram bot daily checkin for Chinese community.",
-    "tags": ["python", "emby", "telegram"],
-    "published": true
-  }

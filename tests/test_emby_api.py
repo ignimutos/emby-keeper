@@ -345,7 +345,7 @@ def test_build_headers_include_mediabrowser_authorization():
     client._token = "token"
     client._env = SimpleNamespace(
         client="Hills",
-        device="emby-keeper",
+        device="TestDevice",
         device_id="0123456789abcdef",
         client_version="1.6.1",
         useragent="Hills/1.6.1 (android; 15)",
@@ -354,10 +354,10 @@ def test_build_headers_include_mediabrowser_authorization():
     headers = client.build_headers()
 
     assert headers["X-Emby-Authorization"] == (
-        'Emby Client="Hills", Device="emby-keeper", DeviceId="0123456789abcdef", Version="1.6.1"'
+        'Emby Client="Hills", Device="TestDevice", DeviceId="0123456789abcdef", Version="1.6.1"'
     )
     assert headers["Authorization"] == (
-        'MediaBrowser Client="Hills", Device="emby-keeper", DeviceId="0123456789abcdef", '
+        'MediaBrowser Client="Hills", Device="TestDevice", DeviceId="0123456789abcdef", '
         'Version="1.6.1", Token="token"'
     )
 
@@ -367,7 +367,7 @@ def test_build_headers_omit_mediabrowser_authorization_without_token(monkeypatch
     client = Emby(account)
     client._env = SimpleNamespace(
         client="Hills",
-        device="emby-keeper",
+        device="TestDevice",
         device_id="0123456789abcdef",
         client_version="1.6.1",
         useragent="Hills/1.6.1 (android; 15)",
@@ -377,7 +377,7 @@ def test_build_headers_omit_mediabrowser_authorization_without_token(monkeypatch
     headers = client.build_headers()
 
     assert headers["X-Emby-Authorization"] == (
-        'Emby Client="Hills", Device="emby-keeper", DeviceId="0123456789abcdef", Version="1.6.1"'
+        'Emby Client="Hills", Device="TestDevice", DeviceId="0123456789abcdef", Version="1.6.1"'
     )
     assert "Authorization" not in headers
 

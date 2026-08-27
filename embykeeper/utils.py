@@ -397,6 +397,22 @@ def get_proxy_str(proxy: Optional[ProxyConfig] = None, curl: bool = False):
     return proxy_str
 
 
+def redact_headers(headers: dict) -> dict:
+    """对请求头中的凭据字段打码, 用于调试输出.
+
+    会隐藏 X-Emby-Token 等明文 token, 以及 Authorization 里的 Token="...".
+    """
+    redacted = dict(headers)
+    for key, value in list(redacted.items()):
+        lower = key.lower()
+        if lower == "authorization" and "Token=" in str(value):
+            prefix, _, _ = str(value).partition("Token=")
+            redacted[key] = f'{prefix}Token="<redacted>"'
+        elif lower in ("x-emby-token", "authorization", "cookie"):
+            redacted[key] = "<redacted>"
+    return redacted
+
+
 def deep_update(base_dict, update_dict):
     """递归地更新字典"""
     for key, value in update_dict.items():

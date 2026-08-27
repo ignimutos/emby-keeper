@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from embykeeper import __version__
 from embykeeper.cache import cache
+from embykeeper.crypto import decrypt_credential, is_encrypted_credential
 from embykeeper.schema import EmbyAccount
 from embykeeper.config import config
 from embykeeper.emby.notification import EmbyWatchResult
@@ -22,7 +23,7 @@ from embykeeper.emby.errors import (
 )
 from embykeeper.emby.keepalive import KeepaliveRun
 from embykeeper.emby.playback import PlaybackSession
-from embykeeper.emby.transport import EmbyTransport
+from embykeeper.emby.transport import EmbyTransport, _parse_json
 
 logger = logger.bind(scheme="embywatcher")
 
@@ -41,7 +42,6 @@ class EmbyEnv(BaseModel):
 
 
 class Emby:
-    playing_count = 0
 
     def __init__(self, account: EmbyAccount):
         self.a = account
@@ -51,7 +51,6 @@ class Emby:
         self._user_id = None
 
         self.run_id = str(uuid.uuid4()).upper()
-        self.cf_clearance = None
         self.useragent = None
         self.items = {}
 
@@ -62,6 +61,16 @@ class Emby:
     @property
     def proxy(self):
         return config.proxy if self.a.use_proxy else None
+
+    @property
+    def verify(self):
+        """是否校验证书: 账号覆盖 > 全局 (默认 false)."""
+        if self.a.verify is not None:
+            return self.a.verify
+        try:
+            return bool(config.emby.verify)
+        except RuntimeError:
+            return False
 
     @property
     def hostname(self):
@@ -89,6 +98,8 @@ class Emby:
 
     def _load_credentials(self):
         data: dict = cache.get(f"emby.credential.{self.hostname}.{self.a.username}", {})
+        if is_encrypted_credential(data):
+            data = decrypt_credential(data, self.a.password) or {}
         self._token = data.get("token", None)
         self._user_id = data.get("userid", None)
 
@@ -115,29 +126,22 @@ class Emby:
             return global_time
         return self.a.time if self.a.time is not None else DEFAULT_EMBY_WATCH_TIME
 
+    @staticmethod
+    def _should_reset_env(data: dict, snapshot: dict) -> bool:
+        """判断缓存的设备环境是否因配置变更而需要重新生成."""
+        cached_snapshot = data.get("config_snapshot")
+        if cached_snapshot is None:
+            for key, configured_value in snapshot.items():
+                if configured_value and data.get(key) != configured_value:
+                    return True
+            return bool(snapshot["client"] is None and data.get("client") in {"Fileball", "Filebar"})
+        return cached_snapshot != snapshot
+
     def _load_env(self):
         cache_key = f"emby.env.{self.hostname}.{self.a.username}"
         data: dict = cache.get(cache_key, {})
         if data:
-            should_clear = False
-            snapshot = self._config_snapshot()
-            cached_snapshot = data.get("config_snapshot")
-
-            if cached_snapshot is None:
-                for key, configured_value in snapshot.items():
-                    if configured_value and data.get(key) != configured_value:
-                        should_clear = True
-                        break
-                if (
-                    not should_clear
-                    and snapshot["client"] is None
-                    and data.get("client") in {"Fileball", "Filebar"}
-                ):
-                    should_clear = True
-            elif cached_snapshot != snapshot:
-                should_clear = True
-
-            if should_clear:
+            if self._should_reset_env(data, self._config_snapshot()):
                 logger.info("账户设置已修改, 将重新生成环境 (Headers).")
                 self._env = None
                 cache.delete(cache_key)
@@ -193,12 +197,6 @@ class Emby:
                 return f"{name.upper()}{device_type.upper()}"
             else:  # english_name_only
                 return name
-
-    @staticmethod
-    def get_device_uuid():
-        rd = random.Random()
-        rd.seed(uuid.getnode())
-        return uuid.UUID(int=rd.getrandbits(128))
 
     def get_fake_env(self):
         cache_key = f"emby.env.{self.hostname}.{self.a.username}"
@@ -266,9 +264,6 @@ class Emby:
     async def _stream_media(self, url, play_session_id):
         return await self._transport._stream_media(url, play_session_id)
 
-    async def use_cfsolver(self):
-        return await self._transport.use_cfsolver()
-
     async def login(self):
         return await self._transport.login()
 
@@ -284,7 +279,7 @@ class Emby:
         )
 
         col_ids = []
-        for i in views.json().get("Items", []):
+        for i in _parse_json(views).get("Items", []):
             cid: str = i.get("Id", None)
             type: str = i.get("CollectionType")
             if cid and type and type.lower() in ("movies", "tvshows"):
@@ -292,7 +287,7 @@ class Emby:
         await asyncio.sleep(random.uniform(0.1, 0.3))
 
         user = await self._request(method="GET", path=f"/Users/{self.user_id}")
-        last_login_date = user.json().get("LastLoginDate", None)
+        last_login_date = _parse_json(user).get("LastLoginDate", None)
         await asyncio.sleep(random.uniform(0.1, 0.3))
 
         await self._request(
@@ -366,7 +361,7 @@ class Emby:
                 **kw,
             },
         )
-        return resp.json()
+        return _parse_json(resp)
 
     async def get_resume_items(
         self,
@@ -394,7 +389,7 @@ class Emby:
                 **kw,
             },
         )
-        return resp.json()
+        return _parse_json(resp)
 
     async def get_resume_item(self, iid):
         items = await self.get_resume_items(media_types=["Video"], limit=50)
@@ -431,16 +426,16 @@ class Emby:
                 **kw,
             },
         )
-        return resp.json().get("Items", [])
+        return _parse_json(resp).get("Items", [])
 
     async def get_item(self, iid, **kw) -> dict:
         resp = await self._request(method="GET", path=f"/Users/{self.user_id}/Items/{iid}")
-        return resp.json()
+        return _parse_json(resp)
 
     async def get_user(self) -> dict:
         """Get current user information."""
         response = await self._request("GET", f"/Users/{self.user_id}")
-        return response.json()
+        return _parse_json(response)
 
     async def mark_played(self, item_id: str) -> bool:
         """Mark an item as played."""

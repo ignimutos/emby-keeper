@@ -16,14 +16,7 @@ def get_cache_options():
         },
         "4": {"name": "下次运行时间缓存", "prefix": "scheduler"},
         "5": {"name": "Emby 登陆凭据", "prefix": "emby.credential", "show_keys": True},
-        "6": {"name": "Telegram 登陆凭据", "prefix": "telegram.session_str", "show_keys": True},
-        "7": {
-            "name": "其他缓存",
-            "children": {
-                "7.1": {"name": "monitor.pornfans.answer.qa", "prefix": "monitor.pornfans.answer.qa"}
-            },
-        },
-        "8": {"name": "所有缓存", "special": "all"},
+        "6": {"name": "所有缓存", "special": "all"},
     }
 
 
@@ -43,7 +36,7 @@ def clean_cache(cache_key: str = None, cache_prefix: str = None):
         # 清理指定前缀的所有缓存
         if cache_prefix == "all_except_credentials":
             # 特殊处理：清理除凭据和配置外所有缓存
-            except_prefixes = ["emby.credential", "telegram.session_str", "config"]
+            except_prefixes = ["emby.credential", "config"]
             all_keys = cache.find_by_prefix("")
             keys_to_delete = [k for k in all_keys if not any(k.startswith(p) for p in except_prefixes)]
             count = len(keys_to_delete)

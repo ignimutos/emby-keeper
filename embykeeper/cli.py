@@ -1,4 +1,3 @@
-import logging
 import os
 from pathlib import Path
 import sys
@@ -10,7 +9,7 @@ import asyncio
 from loguru import logger
 from appdirs import user_data_dir
 
-from . import var, __author__, __name__ as __product__, __url__, __version__
+from . import var, __name__ as __product__, __url__, __version__
 from .utils import AsyncTaskPool, show_exception
 from .config import config
 from .schema import EmbyAccount
@@ -164,7 +163,7 @@ def _select_emby_accounts(names: List[str]) -> List[EmbyAccount]:
 
 @app.async_command(
     help=(
-        f"欢迎使用 [orange3]{__product__.capitalize()}[/] {__version__} " ":cinema: 无参数默认开启全部功能."
+        f"欢迎使用 [orange3]{__product__.capitalize()}[/] {__version__} " ":cinema: 无参数默认开启 Emby 保活."
     )
 )
 async def main(
@@ -185,60 +184,18 @@ async def main(
         rich_help_panel="调试参数",
         help="显示此帮助信息并退出.",
     ),
-    checkiner: bool = typer.Option(
-        False,
-        "--checkin",
-        "-c",
-        rich_help_panel="模块开关",
-        help="仅启用 Telegram 签到功能",
-    ),
     emby: bool = typer.Option(
         False,
         "--emby",
         "-e",
         rich_help_panel="模块开关",
-        help="仅启用 Emby 保活功能",
+        help="启用 Emby 保活功能",
     ),
     emby_account: List[str] = typer.Option(
         [],
         "--emby-account",
         rich_help_panel="模块开关",
         help="仅执行指定名称的 Emby 账号, 可重复传入或使用逗号分隔",
-    ),
-    subsonic: bool = typer.Option(
-        False,
-        "--subsonic",
-        "-S",
-        rich_help_panel="模块开关",
-        help="仅启用 Subsonic 保活功能",
-    ),
-    monitor: bool = typer.Option(
-        False,
-        "--monitor",
-        "-m",
-        rich_help_panel="模块开关",
-        help="仅启用群聊监视功能",
-    ),
-    messager: bool = typer.Option(
-        False,
-        "--messager",
-        "-s",
-        rich_help_panel="模块开关",
-        help="仅启用自动水群功能",
-    ),
-    registrar: bool = typer.Option(
-        False,
-        "--registrar",
-        "-r",
-        rich_help_panel="模块开关",
-        help="仅启用注册功能",
-    ),
-    registrar_bot: Optional[str] = typer.Option(
-        None,
-        "--registrar-bot",
-        "-R",
-        rich_help_panel="模块开关",
-        help="快速反复尝试注册指定机器人 (Embyboss)",
     ),
     version: bool = typer.Option(
         None,
@@ -313,69 +270,12 @@ async def main(
         rich_help_panel="调试参数",
         help="禁用日志颜色",
     ),
-    follow: bool = typer.Option(
-        False,
-        "--follow",
-        "-F",
-        rich_help_panel="调试工具",
-        help="仅启动消息调试",
-    ),
-    analyze: bool = typer.Option(
-        False,
-        "--analyze",
-        "-A",
-        rich_help_panel="调试工具",
-        help="仅启动历史信息分析",
-    ),
-    dump: List[str] = typer.Option(
-        [],
-        "--dump",
-        "-D",
-        rich_help_panel="调试工具",
-        help="仅启动更新日志",
-    ),
-    top: bool = typer.Option(
-        False,
-        "--top",
-        "-T",
-        rich_help_panel="调试参数",
-        help="执行过程中显示系统状态底栏",
-    ),
     play: str = typer.Option(
         None,
         "--play-url",
         "-p",
         rich_help_panel="调试工具",
         help="仅模拟观看一个视频",
-    ),
-    save: bool = typer.Option(
-        False,
-        "--save",
-        rich_help_panel="调试参数",
-        help="记录执行过程中的原始更新日志",
-    ),
-    telegram_test_server: bool = typer.Option(
-        False,
-        "--telegram-test-server",
-        rich_help_panel="调试参数",
-        hidden=True,
-        help="使用 Telegram 测试服务器",
-    ),
-    public: bool = typer.Option(
-        False,
-        "--public",
-        "-P",
-        hidden=True,
-        rich_help_panel="调试参数",
-        help="启用公共仓库部署模式",
-    ),
-    windows: bool = typer.Option(
-        False,
-        "--windows",
-        "-W",
-        hidden=True,
-        rich_help_panel="调试参数",
-        help="启用 Windows 安装部署模式",
     ),
     basedir: Path = typer.Option(
         None,
@@ -403,9 +303,6 @@ async def main(
     var.debug = verbosity
     if verbosity >= 3:
         level = 0
-        if verbosity < 4:
-            logging.getLogger("pyrogram.session").setLevel(20)
-        logging.getLogger("hpack").setLevel(20)
         asyncio.get_event_loop().set_debug(True)
         apply_logging_adapter(level=10)
     elif verbosity >= 1:
@@ -417,39 +314,25 @@ async def main(
     if disable_color:
         var.console.no_color = True
 
-    msg = " 您可以通过 Ctrl+C 以结束运行." if not public else ""
+    msg = " 您可以通过 Ctrl+C 以结束运行."
     logger.info(f"欢迎使用 [orange3]{__product__.capitalize()}[/]! 正在启动, 请稍等.{msg}")
     logger.info(f"当前版本 ({__version__}) 项目页: {__url__}")
     logger.debug(f'命令行参数: "{" ".join(sys.argv[1:])}".')
 
     basedir = Path(basedir or user_data_dir(__product__))
     basedir.mkdir(parents=True, exist_ok=True)
-    if public:
-        logger.info(f'工作目录: "{basedir}"')
-    else:
-        logger.info(f'工作目录: "{basedir}", 您的用户数据相关文件将存储在此处, 请妥善保管.')
-        docker = bool(os.environ.get("EK_IN_DOCKER", False))
-        if docker:
-            logger.info("当前在 Docker 容器中运行, 请确认该目录已挂载, 否则文件将在容器重建后丢失.")
+    logger.info(f'工作目录: "{basedir}", 您的用户数据相关文件将存储在此处, 请妥善保管.')
+    docker = bool(os.environ.get("EK_IN_DOCKER", False))
+    if docker:
+        logger.info("当前在 Docker 容器中运行, 请确认该目录已挂载, 否则文件将在容器重建后丢失.")
     if verbosity:
         logger.warning(f"您当前处于调试模式: 日志等级 {verbosity}.")
         app.pretty_exceptions_enable = True
-    var.telegram_test_server = telegram_test_server
-    if telegram_test_server:
-        logger.warning("您当前处于 Telegram 测试服务器模式, 请谨慎使用.")
 
     config.basedir = basedir
-    config.windows = windows
-    config.public = public
 
-    if public:
-        from .public import public_preparation
-
-        if not await public_preparation():
-            raise typer.Exit(1)
-    else:
-        if not await config.reload_conf(config_file):
-            raise typer.Exit(1)
+    if not await config.reload_conf(config_file):
+        raise typer.Exit(1)
 
     if verbosity >= 2:
         config.nofail = False
@@ -473,86 +356,29 @@ async def main(
         "proxy", lambda x, y: logger.bind(scheme="config").warning("修改代理设置后, 可能需要重启程序以生效.")
     )
 
-    if config.mongodb and not var.use_mongodb_config:
-        if config.proxy:
-            logger.warning("由于不支持, 不使用设定的代理连接 MongoDB 服务器.")
-        if not public:
-            logger.warning("在本地部署模式下, 不推荐设定使用 MongoDB 缓存.")
-        logger.info(f"正在连接到 MongoDB 缓存, 请稍候.")
-        try:
-            from .cache import cache
+    try:
+        from .cache import cache
 
-            cache.set("test", "test")
-            assert cache.get("test", None) == "test"
-            cache.delete("test")
-        except Exception as e:
-            logger.error(f"MongoDB 缓存连接失败: {e}, 程序将退出.")
-            show_exception(e, regular=False)
-            return
-    else:
-        try:
-            from .cache import cache
+        cache.set("test", "test")
+        assert cache.get("test", None) == "test"
+        cache.delete("test")
+    except Exception as e:
+        logger.error(f"本地缓存读写失败: {e}, 程序将退出.")
+        show_exception(e, regular=False)
+        return
 
-            cache.set("test", "test")
-            assert cache.get("test", None) == "test"
-            cache.delete("test")
-        except Exception as e:
-            logger.error(f"本地缓存读写失败: {e}, 请使用 MongoDB 缓存, 程序将退出.")
-            show_exception(e, regular=False)
-            return
-
-    if not checkiner and not monitor and not emby and not messager and not subsonic and not registrar:
-        checkiner = True
+    if not emby:
         emby = True
-        subsonic = True
-        monitor = True
-        messager = True
-        registrar = True
 
     if clean:
         from .clean import cleaner
 
         return await cleaner()
 
-    if follow:
-        from .telegram.debug import follower
-
-        return await follower()
-
-    if top:
-        from .topper import topper
-
-        if not (var.console.is_terminal and var.console.is_interactive):
-            logger.warning("在非交互模式下启用底栏可能会导致显示异常.")
-        asyncio.create_task(topper())
-
     if play:
         from .emby.main import EmbyManager
 
         return await EmbyManager().play_url(play)
-
-    if save:
-        from .telegram.debug import saver
-
-        asyncio.create_task(saver())
-
-    if analyze:
-        from .telegram.debug import analyzer
-
-        indent = " " * 23
-        chats = typer.prompt(indent + "请输入群组用户名 (以空格分隔)").split()
-        keywords = typer.prompt(indent + "请输入关键词 (以空格分隔)", default="", show_default=False)
-        keywords = keywords.split() if keywords else []
-        timerange = typer.prompt(indent + '请输入时间范围 (以"-"分割)', default="", show_default=False)
-        timerange = timerange.split("-") if timerange else []
-        limit = typer.prompt(indent + "请输入各群组最大获取数量", default=10000, type=int)
-        outputs = typer.prompt(indent + "请输入最大输出数量", default=1000, type=int)
-        return await analyzer(chats, keywords, timerange, limit, outputs)
-
-    if dump:
-        from .telegram.debug import dumper
-
-        return await dumper(dump)
 
     if debug_notify:
         from .notify import debug_notifier
@@ -560,51 +386,13 @@ async def main(
         return await debug_notifier()
 
     try:
-        checkin_man = None
-        if checkiner:
-            from .telegram.checkin_main import CheckinerManager
-
-            checkin_man = CheckinerManager()
-
-        monitor_man = None
-        if monitor:
-            from .telegram.monitor_main import MonitorManager
-
-            monitor_man = MonitorManager()
-
-        message_man = None
-        if messager:
-            from .telegram.message_main import MessageManager
-
-            message_man = MessageManager()
-
-        register_man = None
-        if registrar or registrar_bot:
-            from .telegram.registrar_main import RegisterManager
-
-            register_man = RegisterManager()
-
         emby_man = None
         if emby:
             from .emby.main import EmbyManager
 
             emby_man = EmbyManager()
 
-        subsonic_man = None
-        if subsonic:
-            from .subsonic.main import SubsonicManager
-
-            subsonic_man = SubsonicManager()
-
         pool = AsyncTaskPool()
-
-        if registrar_bot:
-            logger.info(f"开始快速注册 @{registrar_bot}")
-            if register_man:
-                await register_man.run_single_bot(registrar_bot, instant=True)
-            else:
-                logger.error("注册管理器未初始化")
-            return
 
         streams = None
         allow_instant_notifications = _instant_notifications_allowed(instant=instant)
@@ -624,35 +412,21 @@ async def main(
             if should_start_notifier:
                 set_instant_notification_window(True, allow=allow_instant_notifications)
             try:
-                if checkin_man:
-                    pool.add(checkin_man.run_all(instant=True), "站点签到")
                 if emby_man:
                     if selected_emby_accounts is None:
                         pool.add(emby_man.run_all(instant=True), "Emby 保活")
                     else:
                         pool.add(emby_man.run_accounts(selected_emby_accounts, instant=True), "Emby 保活")
-                if subsonic_man:
-                    pool.add(subsonic_man.run_all(instant=True), "Subsonic 保活")
                 await pool.wait()
             finally:
                 clear_instant_notification_window()
-            logger.debug("启动时立刻执行签到和保活: 已完成.")
+            logger.debug("启动时立刻执行保活: 已完成.")
         if not once:
-            if checkin_man:
-                pool.add(checkin_man.schedule_all(), "站点签到")
-            if register_man:
-                pool.add(register_man.start(), "站点注册")
-            if monitor_man:
-                pool.add(monitor_man.run_all(), "群组监控")
-            if message_man:
-                pool.add(message_man.run_all(), "自动水群")
             if emby_man:
                 if selected_emby_accounts is None:
                     pool.add(emby_man.schedule_all(), "Emby 保活")
                 else:
                     pool.add(emby_man.schedule_accounts(selected_emby_accounts), "Emby 保活")
-            if subsonic_man:
-                pool.add(subsonic_man.schedule_all(), "Subsonic 保活")
         if config.noexit:
             logger.info("处于长期监控模式, 当没有账号时将继续监控等待新配置.")
             pool.add(asyncio.Event().wait(), "账号配置文件监控")

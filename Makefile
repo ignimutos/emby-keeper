@@ -1,6 +1,6 @@
 .RECIPEPREFIX := >
 .DEFAULT_GOAL := help
-.PHONY: help help/simple help/all install develop venv venv/require venv/clean python/venv run run/debug run/noinstant run/web systemd systemd/install systemd/uninstall lint lint/node lint/python test debugpy debugpy/cli debugpy/web version version/patch version/minor version/major config/generate push clean clean/build clean/pyc clean/test node/require docs/dev docs/build docs/preview
+.PHONY: help help/simple help/all install develop venv venv/require venv/clean python/venv run run/debug run/noinstant systemd systemd/install systemd/uninstall lint lint/python test debugpy debugpy/cli version version/patch version/minor version/major config/generate push clean clean/build clean/pyc clean/test
 
 UV ?= uv
 PYTHON ?= 3.13
@@ -16,7 +16,6 @@ help/simple:
 >   @echo "  develop - 使用 uv 同步开发环境"
 >   @echo "  run - 运行 Embykeeper (使用默认配置文件 config.toml)"
 >   @echo "  run/debug - 运行 Embykeeper (使用默认配置文件 config.toml), 并启用调试日志输出"
->   @echo "  run/web - 运行 Embykeeper 的在线网页服务器"
 >   @echo "  systemd - 启用 Embykeeper 自动启动"
 >   @echo "  lint - 使用 black 和 pre-commit 检查代码风格"
 >   @echo "  test - 使用 pytest 运行代码测试"
@@ -36,7 +35,6 @@ help/all:
 >   @echo "  run - 运行 Embykeeper (使用默认配置文件 config.toml)"
 >   @echo "  run/debug - 运行 Embykeeper (使用默认配置文件 config.toml), 并启用调试日志输出"
 >   @echo "  run/noinstant - 运行 Embykeeper, 但不执行立即运行"
->   @echo "  run/web - 运行 Embykeeper 的在线网页服务器"
 >   @echo "  systemd - 启用 Embykeeper 自动启动 (当前用户登录时)"
 >   @echo "  systemd (当 sudo / root) - 启用 Embykeeper 自动启动 (系统启动时)"
 >   @echo "  systemd/uninstall - 停止 Embykeeper 自动启动 (当前用户登录时)"
@@ -44,7 +42,6 @@ help/all:
 >   @echo "  lint - 使用 black 和 pre-commit 检查代码风格"
 >   @echo "  test - 使用 pytest 运行代码测试"
 >   @echo "  debugpy - 以远程连接方式在本地主机上启动 Embykeeper 的 Debugpy 调试服务器 (vscode 调试模块)"
->   @echo "  debugpy/web - 以远程连接方式在本地主机上启动 Embykeeper 在线网页服务器的 Debugpy 调试服务器"
 >   @echo "  version - 等同于 version/patch"
 >   @echo "  version/patch - 运行 bump2version 版本更新 (patch, 例如 1.0.0 -> 1.0.1)"
 >   @echo "  version/minor - 运行 bump2version 版本更新 (minor, 例如 1.0.0 -> 1.1.0)"
@@ -55,10 +52,6 @@ help/all:
 >   @echo "  clean/build - 删除构建缓存"
 >   @echo "  clean/pyc - 删除 Python 缓存"
 >   @echo "  clean/test - 删除测试缓存"
->   @echo "  node/require - 安装 NPM 依赖"
->   @echo "  docs/dev - 在本地启动文档服务器"
->   @echo "  docs/build - 构建文档"
->   @echo "  docs/preview - 预览文档"
 
 install:
 >   @$(UV) python install "$(PYTHON)"
@@ -86,9 +79,6 @@ run/debug: venv/require
 
 run/noinstant: venv/require
 >   @"$(UV)" run embykeeper
-
-run/web: venv/require
->   @"$(UV)" run embykeeperweb --public
 
 systemd: systemd/install
 
@@ -157,10 +147,7 @@ systemd/uninstall:
 >       echo 'Info: 已移除 systemd 配置. Embykeeper 不再自动启动.'; \
 >   fi
 
-lint: lint/python lint/node
-
-lint/node: node/require
->   npm run lint
+lint: lint/python
 
 lint/python: venv/require
 >   "$(UV)" run black .
@@ -173,9 +160,6 @@ debugpy: debugpy/cli
 
 debugpy/cli: venv/require
 >   "$(UV)" run python -m debugpy --listen localhost:5678 --wait-for-client cli.py
-
-debugpy/web: venv/require
->   "$(UV)" run python -m debugpy --listen localhost:5678 --wait-for-client web.py --public
 
 version: version/patch
 
@@ -222,18 +206,3 @@ clean/test:
 >   rm -fr .tox/
 >   rm -f .coverage
 >   rm -fr htmlcov/
-
-node/require:
->   @if [ ! -d "node_modules" ]; then \
->       echo "正在安装 NPM 依赖..."; \
->       npm install; \
->   fi
-
-docs/dev: node/require
->   npm run docs:dev
-
-docs/build: node/require
->   npm run docs:build
-
-docs/preview: node/require
->   npm run docs:preview

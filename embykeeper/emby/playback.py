@@ -16,6 +16,7 @@ from typing import Union
 
 from embykeeper.utils import show_exception, truncate_str
 
+from embykeeper.emby.transport import _parse_json
 from embykeeper.emby.errors import (
     EmbyPlayError,
     EmbyRequestError,
@@ -161,7 +162,7 @@ class PlaybackSession:
             params=playback_info_params,
             json=playback_info_body(),
         )
-        playback_info = resp.json()
+        playback_info = _parse_json(resp)
 
         media_sources = playback_info.get("MediaSources") or []
         if media_sources:
@@ -260,7 +261,6 @@ class PlaybackSession:
         client.log.info(f'开始模拟加载视频 "{truncate_str(iname, 10)}" ({rt:.0f} 秒).')
         await asyncio.sleep(rt)
         client.log.info(f'开始发送视频 "{truncate_str(iname, 10)}" 发送进度.')
-        type(client).playing_count += 1
         try:
             await asyncio.sleep(random.uniform(1, 3))
             try:
@@ -339,7 +339,6 @@ class PlaybackSession:
                     progress_errors += 1
             await asyncio.sleep(random.uniform(1, 3))
         finally:
-            type(client).playing_count -= 1
             stream_task.cancel()
             try:
                 await stream_task

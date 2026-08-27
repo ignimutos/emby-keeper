@@ -41,8 +41,6 @@ class DummyTask:
 class FakePlaybackClient:
     """实现 PlaybackClient 协约的最小假实现."""
 
-    playing_count = 0  # 与 Emby 相同的类级并发仪表
-
     def __init__(self, playback_info=None, stopped_error=None, resolved_url="https://cdn.example.com/stream"):
         self.user_id = "user-id"
         self.token = "token"
@@ -122,9 +120,6 @@ def test_session_runs_full_playback_sequence(frozen_playback_random):
     assert playing[2]["MediaSourceId"] == "media-source-id"
     assert playing[2]["AudioStreamIndex"] == 2
     assert playing[2]["SubtitleStreamIndex"] == -1  # DefaultSubtitleStreamIndex=None -> -1
-
-    # 类级并发仪表在会话结束后归零
-    assert FakePlaybackClient.playing_count == 0
 
 
 def test_session_falls_back_to_random_media_source_id(frozen_playback_random):

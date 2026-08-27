@@ -5,14 +5,15 @@
 """
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from curl_cffi.requests import RequestsError
 
-from embykeeper.emby.transport import EmbyTransport
-from embykeeper.emby.errors import EmbyConnectError
+from embykeeper.emby.transport import EmbyTransport, _parse_json
+from embykeeper.emby.errors import EmbyConnectError, EmbyStatusError
 
 
 class FakeResponse:
@@ -63,11 +64,10 @@ class FakeOwner:
             url=url,
             username="user",
             password="pass",
-            cf_challenge=False,
             use_proxy=False,
         )
         self.proxy = None
-        self.cf_clearance = None
+        self.verify = False
         self.useragent = None
         self.env = SimpleNamespace(
             client="Hills", device="D", device_id="ID", client_version="1.6.1", useragent="Hills/1.6.1"
@@ -83,9 +83,6 @@ class FakeOwner:
 
     async def login(self):
         self.login_calls += 1
-        return True
-
-    async def use_cfsolver(self):
         return True
 
 
@@ -156,6 +153,25 @@ def test_resolve_stream_url_strips_subpath():
     url = transport._resolve_stream_url("/myg/videos/123/stream.mkv?Static=true")
 
     assert url == "https://example.com/myg/emby/videos/123/stream.mkv?Static=true"
+
+
+def test_parse_json_rejects_non_json_body():
+    """服务器返回非 JSON (网关/Cloudflare 页) 时应给出可读错误而非裸 JSONDecodeError."""
+
+    class BadJsonResponse(FakeResponse):
+        def json(self):
+            raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    with pytest.raises(EmbyStatusError):
+        _parse_json(BadJsonResponse(status_code=200, text="<html>error</html>"))
+
+
+def test_parse_json_accepts_valid_body():
+    class GoodJsonResponse(FakeResponse):
+        def json(self):
+            return {"ok": True}
+
+    assert _parse_json(GoodJsonResponse(status_code=200)) == {"ok": True}
 
 
 def test_format_connect_error_explains_sni():

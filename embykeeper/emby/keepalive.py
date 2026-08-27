@@ -147,11 +147,8 @@ class KeepaliveRun:
             random.shuffle(shuffled_items)
 
             for iid, item in shuffled_items:
-                try:
-                    if iid in failed_items:
-                        failed_reasons["invalid"] += 1
-                        continue
-                except KeyError:
+                if iid in failed_items:
+                    failed_reasons["invalid"] += 1
                     continue
                 media_type = item.get("MediaType", None)
                 if not media_type == "Video":
