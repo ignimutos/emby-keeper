@@ -4,7 +4,7 @@ from asyncio import Event
 import asyncio
 from datetime import datetime
 from enum import IntEnum, auto
-from typing import TYPE_CHECKING, Callable, Dict, List
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 import random
 import string
 from loguru import logger
@@ -19,6 +19,16 @@ if TYPE_CHECKING:
     from loguru import Logger
 
 _running_runs: Dict[str, RunContext] = {}
+
+# 每个运行上下文保留的日志记录上限, 防止长驻运行 (daemon) 内存无限增长
+MAX_LOG_RECORDS = 200
+
+
+def _append_log(log: List[LogRecord], record: LogRecord) -> None:
+    """追加日志记录并限制上限."""
+    log.append(record)
+    if len(log) > MAX_LOG_RECORDS:
+        del log[: len(log) - MAX_LOG_RECORDS]
 
 
 class RunStatus(IntEnum):
@@ -50,15 +60,15 @@ class RunContext(BaseModel):
 
     id: str
     parent_ids: List[str] = []
-    description: str = None
+    description: Optional[str] = None
     status: RunStatus = RunStatus.PENDING
-    status_info: str = None
+    status_info: Optional[str] = None
     log: List[LogRecord] = []
-    duration: float = None
-    start_time: datetime = None
-    end_time: datetime = None
-    next_time: datetime = None
-    reschedule: int = None
+    duration: Optional[float] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    next_time: Optional[datetime] = None
+    reschedule: Optional[int] = None
 
     def start(self, status: RunStatus = RunStatus.RUNNING):
         """开始任务, 设置开始时间和状态"""
@@ -71,8 +81,9 @@ class RunContext(BaseModel):
 
         if status:
             self.status = status
-            self.log.append(
-                LogRecord(level="DEBUG", message=f"任务状态已设置为 {status.name}", time=datetime.now())
+            _append_log(
+                self.log,
+                LogRecord(level="DEBUG", message=f"任务状态已设置为 {status.name}", time=datetime.now()),
             )
 
     def finish(self, status: RunStatus = None, status_info: str = None):
@@ -137,12 +148,14 @@ class RunContext(BaseModel):
         def log_sink(message):
             record = message.record
             if record["extra"].get("run_id") == run_id:
-                log_record = LogRecord(
-                    level=record["level"].name.upper(),
-                    message=record["message"],
-                    time=record["time"],
+                _append_log(
+                    run.log,
+                    LogRecord(
+                        level=record["level"].name.upper(),
+                        message=record["message"],
+                        time=record["time"],
+                    ),
                 )
-                run.log.append(log_record)
 
         # 添加日志处理器
         run._handler_id = logger.add(log_sink, filter=lambda record: "run_id" in record["extra"])
@@ -211,12 +224,14 @@ class RunContext(BaseModel):
     def log_sink(self, message):
         record = message.record
         if record["extra"].get("run_id") == self.id:
-            log_record = LogRecord(
-                level=record["level"].name.upper(),
-                message=Text(record["message"]).plain,
-                time=record["time"],
+            _append_log(
+                self.log,
+                LogRecord(
+                    level=record["level"].name.upper(),
+                    message=Text(record["message"]).plain,
+                    time=record["time"],
+                ),
             )
-            self.log.append(log_record)
 
     @classmethod
     def run(cls, func: Callable, description: str = None, parent_ids: List[str] = None):

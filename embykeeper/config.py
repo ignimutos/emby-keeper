@@ -1,24 +1,22 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import binascii
 import os
 from pathlib import Path
 import re
-from typing import Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import tomli as tomllib
 from loguru import logger
-from watchfiles import awatch
-from pydantic import ValidationError
 from appdirs import user_data_dir
 
 from .utils import ProxyBase, deep_update, show_exception
-from .schema import (
-    Config,
-    EmbyAccount,
-    format_errors,
-)
 from . import __name__ as __product__
+
+if TYPE_CHECKING:
+    from .schema import Config, EmbyAccount
 
 logger = logger.bind(scheme="config")
 
@@ -134,6 +132,7 @@ class ConfigManager(ProxyBase):
     def generate_example_config():
         """生成配置文件骨架, 并填入生成的信息."""
 
+        from .schema import Config, EmbyAccount
         from tomlkit import document, nl, comment, item, dumps
         from tomlkit.items import InlineTable
         from faker import Faker
@@ -266,6 +265,9 @@ class ConfigManager(ProxyBase):
         """验证配置文件格式"""
         if config is None:
             return None
+        from .schema import Config, format_errors  # 惰性导入: 避免启动即加载 pydantic
+        from pydantic import ValidationError
+
         try:
             return Config(**config)
         except ValidationError as e:
@@ -273,6 +275,8 @@ class ConfigManager(ProxyBase):
             return None
 
     async def start_observer(self):
+        from watchfiles import awatch  # 惰性导入: 仅在启用配置监听时加载, 加快启动
+
         async def observer():
             async for changes in awatch(self._conf_file):
                 logger.info(f"配置文件已更改, 正在重新加载.")
@@ -306,7 +310,10 @@ class ConfigManager(ProxyBase):
         cfg_dict = {}
         env_config = os.environ.get(f"EK_CONFIG", None)
         if env_config:
-            cfg_dict.update(self.load_config_str(env_config))
+            parsed_env = self.load_config_str(env_config)
+            if parsed_env is None:
+                return False
+            cfg_dict.update(parsed_env)
         else:
             default_conf_file = Path("config.toml")
             if conf_file:
@@ -333,11 +340,11 @@ class ConfigManager(ProxyBase):
                 try:
                     with open(default_conf_file, "w+", encoding="utf-8") as f:
                         f.write(self.generate_example_config())
-                except OSError as e:
-                    logger.error(
-                        f'无法写入默认配置文件 "{default_conf_file}", 请确认是否有权限进行该目录写入: {e}.'
-                    )
-                    return False
+                except OSError as e:  # pragma: no cover  # 仅在目录只读等环境问题下触发
+                    logger.error(  # pragma: no cover
+                        f'无法写入默认配置文件 "{default_conf_file}", 请确认是否有权限进行该目录写入: {e}.'  # pragma: no cover
+                    )  # pragma: no cover
+                    return False  # pragma: no cover
                 logger.warning("需要一个 TOML 格式的配置文件.")
                 logger.warning(f'您可以根据生成的参考配置文件 "{default_conf_file}" 进行配置')
                 return False
@@ -353,6 +360,9 @@ class ConfigManager(ProxyBase):
                 self._conf_file = conf_file
                 await self.start_observer()
             return True
+        else:
+            # 无配置文件 (仅环境变量) 时直接应用配置
+            return self.set(cfg_model)
 
 
 class CallbackHandle:

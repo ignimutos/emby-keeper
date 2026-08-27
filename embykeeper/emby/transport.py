@@ -9,6 +9,8 @@ _get_session) 的 monkeypatch 语义——这是传输逻辑归属本模块、�
 收口在门面上的关键。
 """
 
+from __future__ import annotations
+
 import asyncio
 import random
 import re
@@ -16,12 +18,29 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from loguru import logger
-from curl_cffi import CurlHttpVersion
-from curl_cffi.requests import AsyncSession, Response, RequestsError
 
 from embykeeper.utils import get_proxy_str
 from embykeeper.cache import cache
 from embykeeper.crypto import encrypt_credential
+
+# curl_cffi 惰性加载: 首次发请求才导入 (启动到首个请求间省 ~250ms).
+# 统一入口: 每个会用到 curl_cffi 的方法在开头调用 _import_curl_cffi() 即可
+# (函数体内的裸名字 / except 子句不会触发模块 __getattr__, 必须先确保已加载).
+# 幂等性靠逐名判断实现, 不用标志位 (测试 monkeypatch 还原后标志会失效).
+
+
+def _import_curl_cffi():
+    global CurlHttpVersion, AsyncSession, Response, RequestsError
+    # 逐个判断: 避免覆盖测试中已替换的类 (如 AsyncSession)
+    if "CurlHttpVersion" not in globals():
+        from curl_cffi import CurlHttpVersion
+    if "AsyncSession" not in globals():
+        from curl_cffi.requests import AsyncSession
+    if "Response" not in globals():
+        from curl_cffi.requests import Response
+    if "RequestsError" not in globals():
+        from curl_cffi.requests import RequestsError
+
 
 from embykeeper.emby.errors import (
     EmbyConnectError,
@@ -49,6 +68,7 @@ class EmbyTransport:
 
     def __init__(self, owner):
         self.owner = owner
+        self._session = None  # 复用会话 (普通请求); 流式长连接独立建会话
 
     # --- 头部与会话 ---
 
@@ -70,11 +90,11 @@ class EmbyTransport:
             headers["Authorization"] = f'MediaBrowser {auth_header}, Token="{owner.token}"'
         return headers
 
-    def _get_session(self, **overrides) -> AsyncSession:
+    def _new_session(self, **overrides) -> AsyncSession:
+        _import_curl_cffi()
         owner = self.owner
         session_kwargs = dict(
             verify=owner.verify,
-            headers=self.build_headers(),
             proxy=get_proxy_str(owner.proxy, curl=True),
             timeout=10.0,
             impersonate="chrome",
@@ -83,6 +103,15 @@ class EmbyTransport:
         )
         session_kwargs.update(overrides)
         return AsyncSession(**session_kwargs)
+
+    def _get_session(self, **overrides) -> AsyncSession:
+        """复用同一底层会话 (连接池), 避免每个请求都重建 + TLS 握手.
+
+        请求头随登录状态变化, 不缓存在会话上, 由 _request 逐请求传入.
+        """
+        if self._session is None:
+            self._session = self._new_session()
+        return self._session
 
     def _format_connect_error(self, error: Exception, url: str) -> str:
         error_msg = re.sub(r"\s+See\s+.*?\s+first for more details\.\.?", "", str(error))
@@ -120,6 +149,7 @@ class EmbyTransport:
     # --- 核心请求 (重试 / 401 重登 / 502-504 退避 / Cloudflare 403) ---
 
     async def _request(self, method: str, path: str, _login=False, _session_kwargs=None, **kw) -> Response:
+        _import_curl_cffi()  # 确保 except 子句引用的 RequestsError 已加载
         owner = self.owner
 
         if path.startswith(("http://", "https://")):
@@ -130,27 +160,39 @@ class EmbyTransport:
 
         last_err = None
         session_kwargs = _session_kwargs or {}
+        is_stream = bool(kw.get("stream"))
         for _ in range(3):
             try:
-                async with owner._get_session(**session_kwargs) as session:
-                    resp: Response = await session.request(method, url, **kw)
-                    if resp.status_code == 401 and owner.a.username and not _login:
-                        if not await owner.login():
-                            raise EmbyLoginError("无法登陆到服务器")
-                        continue
-                    elif resp.status_code in (502, 503, 504):
-                        await asyncio.sleep(random.random() * 2 + 0.5)
-                        continue
-                    elif resp.status_code == 403 or (
-                        not kw.get("stream") and ("cf-wrapper" in resp.text or "Just a moment" in resp.text)
-                    ):
-                        raise EmbyStatusError(
-                            "访问失败: 服务器返回 HTTP 403 或 Cloudflare 验证页 (可能启用了 Cloudflare 保护)"
-                        )
-                    elif not resp.ok and not _login:
-                        raise EmbyStatusError(f"访问失败: 异常 HTTP 代码 {resp.status_code} (URL = {url})")
-                    else:
-                        return resp
+                if is_stream:
+                    # 流式长连接独立会话, 避免与进度上报并发争用同一 curl 句柄
+                    session = self._new_session()
+                else:
+                    session = owner._get_session(**session_kwargs)
+                # 请求头随登录状态变化, 逐请求构建 (复用会话不缓存头)
+                headers = session_kwargs.get("headers") or owner.build_headers()
+                request_kwargs = dict(kw)
+                request_kwargs["headers"] = headers
+                for opt in ("http_version", "impersonate"):
+                    if opt in session_kwargs and opt not in request_kwargs:
+                        request_kwargs[opt] = session_kwargs[opt]
+                resp: Response = await session.request(method, url, **request_kwargs)
+                if resp.status_code == 401 and owner.a.username and not _login:
+                    if not await owner.login():
+                        raise EmbyLoginError("无法登陆到服务器")
+                    continue
+                elif resp.status_code in (502, 503, 504):
+                    await asyncio.sleep(random.random() * 2 + 0.5)
+                    continue
+                elif resp.status_code == 403 or (
+                    not kw.get("stream") and ("cf-wrapper" in resp.text or "Just a moment" in resp.text)
+                ):
+                    raise EmbyStatusError(
+                        "访问失败: 服务器返回 HTTP 403 或 Cloudflare 验证页 (可能启用了 Cloudflare 保护)"
+                    )
+                elif not resp.ok and not _login:
+                    raise EmbyStatusError(f"访问失败: 异常 HTTP 代码 {resp.status_code} (URL = {url})")
+                else:
+                    return resp
             except RequestsError as e:
                 last_err = e
                 await asyncio.sleep(random.random() + 0.5)
@@ -169,6 +211,7 @@ class EmbyTransport:
     # --- 流媒体模拟 ---
 
     async def _open_stream_with_fallback(self, url: str, length: int, play_session_id: str):
+        _import_curl_cffi()
         owner = self.owner
         stream_headers = {
             "User-Agent": owner.useragent or owner.env.useragent,

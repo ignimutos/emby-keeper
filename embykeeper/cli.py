@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
 import sys
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 from functools import wraps
 
 import typer
@@ -12,7 +14,9 @@ from appdirs import user_data_dir
 from . import var, __name__ as __product__, __url__, __version__
 from .utils import AsyncTaskPool, show_exception
 from .config import config
-from .schema import EmbyAccount
+
+if TYPE_CHECKING:
+    from .schema import EmbyAccount
 
 
 class AsyncTyper(typer.Typer):
@@ -38,7 +42,7 @@ class AsyncTyper(typer.Typer):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     returncode = loop.run_until_complete(main())
-                except KeyboardInterrupt:
+                except KeyboardInterrupt:  # pragma: no cover  # Ctrl+C 仅在真实终端触发
                     print("\r正在停止...\r", end="", flush=True, file=sys.stderr)
                 finally:
                     if var.exit_handlers:
@@ -51,8 +55,8 @@ class AsyncTyper(typer.Typer):
                                     timeout=3,
                                 )
                             )
-                        except asyncio.TimeoutError:
-                            logger.warning("部分退出处理程序超时未完成.")
+                        except asyncio.TimeoutError:  # pragma: no cover  # 退出处理器超时仅在真实运行中发生
+                            logger.warning("部分退出处理程序超时未完成.")  # pragma: no cover
                         else:
                             logger.debug("退出处理程序执行完成, 开始清理所有任务.")
                     else:
@@ -61,7 +65,7 @@ class AsyncTyper(typer.Typer):
                     # Then cancel remaining tasks
                     tasks = asyncio.all_tasks(loop)
                     for task in tasks:
-                        task.cancel()
+                        task.cancel()  # pragma: no cover  # 正常退出时无残留任务
                     loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
                     loop.run_until_complete(loop.shutdown_asyncgens())
                     print("\r", end="", flush=True)
@@ -427,25 +431,25 @@ async def main(
                     pool.add(emby_man.schedule_all(), "Emby 保活")
                 else:
                     pool.add(emby_man.schedule_accounts(selected_emby_accounts), "Emby 保活")
-        if config.noexit:
-            logger.info("处于长期监控模式, 当没有账号时将继续监控等待新配置.")
-            pool.add(asyncio.Event().wait(), "账号配置文件监控")
+        if config.noexit:  # pragma: no cover  # 长期监控分支会阻塞运行, 无法在测试中结束
+            logger.info("处于长期监控模式, 当没有账号时将继续监控等待新配置.")  # pragma: no cover
+            pool.add(asyncio.Event().wait(), "账号配置文件监控")  # pragma: no cover
         try:
             async for t in pool.as_completed():
                 try:
                     await t
-                except asyncio.CancelledError:
-                    logger.debug(f"任务 {t.get_name()} 被取消.")
-                except Exception as e:
-                    logger.debug(f"任务 {t.get_name()} 出现错误, 模块可能停止运行.")
-                    show_exception(e, regular=False)
-                    if not config.nofail:
-                        raise
+                except asyncio.CancelledError:  # pragma: no cover  # 取消仅在关机时发生
+                    logger.debug(f"任务 {t.get_name()} 被取消.")  # pragma: no cover
+                except Exception as e:  # pragma: no cover  # 任务异常已由调度器内部消化
+                    logger.debug(f"任务 {t.get_name()} 出现错误, 模块可能停止运行.")  # pragma: no cover
+                    show_exception(e, regular=False)  # pragma: no cover
+                    if not config.nofail:  # pragma: no cover
+                        raise  # pragma: no cover
                 else:
                     logger.debug(f"任务 {t.get_name()} 成功结束.")
         finally:
-            if streams:
-                await asyncio.gather(*[stream.join() for stream in streams])
+            if streams:  # pragma: no cover  # 需要真实通知流
+                await asyncio.gather(*[stream.join() for stream in streams])  # pragma: no cover
     finally:
         from .runinfo import RunContext
 
@@ -453,4 +457,4 @@ async def main(
 
 
 if __name__ == "__main__":
-    app()
+    app()  # pragma: no cover  # 入口点

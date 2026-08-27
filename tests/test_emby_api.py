@@ -84,9 +84,22 @@ def patch_cache(monkeypatch, store=None):
     return store
 
 
+def _patch_client_env(client):
+    """设置客户端环境, 使 build_headers 无需生成真实 env (避免 faker/cache)."""
+    client._env = SimpleNamespace(
+        client="Hills",
+        device="TestDevice",
+        device_id="0123456789abcdef",
+        client_version="1.6.1",
+        useragent="Hills/1.6.1 (android; 15)",
+    )
+    client._token = "token"
+
+
 def test_request_appends_emby_api_base_to_public_account_url():
     account = EmbyAccount(url="https://example.com/myg", username="user", password="pass")
     client = Emby(account)
+    _patch_client_env(client)
     session = FakeSession()
     client._get_session = lambda: session
 
@@ -98,6 +111,7 @@ def test_request_appends_emby_api_base_to_public_account_url():
 def test_request_keeps_existing_emby_api_base_in_account_url():
     account = EmbyAccount(url="https://example.com/myg/emby", username="user", password="pass")
     client = Emby(account)
+    _patch_client_env(client)
     session = FakeSession()
     client._get_session = lambda: session
 
@@ -106,9 +120,10 @@ def test_request_keeps_existing_emby_api_base_in_account_url():
     assert session.requested_url.endswith("/myg/emby/Users/AuthenticateByName")
 
 
-def test_request_passes_http_version_override_to_session():
+def test_request_passes_http_version_override_to_request():
     account = EmbyAccount(url="https://example.com", username="user", password="pass")
     client = Emby(account)
+    _patch_client_env(client)
     recorded = {}
 
     class RecordingSession(FakeSession):
@@ -117,7 +132,6 @@ def test_request_passes_http_version_override_to_session():
             return await super().request(method, url, **kwargs)
 
     def build_session(**session_kwargs):
-        recorded["session_kwargs"] = session_kwargs
         return RecordingSession()
 
     client._get_session = build_session
@@ -131,7 +145,7 @@ def test_request_passes_http_version_override_to_session():
         )
     )
 
-    assert recorded["session_kwargs"]["http_version"] == CurlHttpVersion.V1_1
+    assert recorded["request_kwargs"]["http_version"] == CurlHttpVersion.V1_1
 
 
 def test_get_session_uses_10_second_timeout_by_default(monkeypatch):
@@ -1585,6 +1599,358 @@ def test_watch_logs_missing_runtime_summary_when_no_video_can_start(monkeypatch)
     assert warning_messages == [
         "由于没有成功播放视频, 保活失败. 候选过滤统计: 1 个视频无法获取时长 (allow_stream=False)"
     ]
+
+
+def test_load_main_page_populates_items_from_latest(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+    calls = []
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        calls.append(path)
+        if path.endswith("/Views"):
+            return FakeJsonResponse({"Items": [{"Id": "col1", "CollectionType": "movies"}]})
+        if path.endswith("/Items/Latest"):
+            return FakeJsonResponse([{"Id": "item1", "Name": "片1"}])  # /Items/Latest 返回裸列表
+        return FakeJsonResponse({"Items": []})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *a: 0)
+
+    asyncio.run(client.load_main_page())
+
+    assert "item1" in client.items
+
+
+def test_load_main_page_folder_fallback_reaches_threshold(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        if path.endswith("/Views"):
+            return FakeJsonResponse({"Items": [{"Id": "col1", "CollectionType": "movies"}]})
+        if path.endswith("/Items/Latest"):
+            return FakeJsonResponse([])  # /Items/Latest 返回裸列表
+        if "/Items/Resume" in path:
+            return FakeJsonResponse({"Items": []})
+        if "/Items" in path:
+            return FakeJsonResponse(
+                {
+                    "Items": [
+                        {"Name": "无id"},
+                        {"Id": "f1", "Name": "一"},
+                        {"Id": "f2", "Name": "二"},
+                        {"Id": "f3", "Name": "三"},
+                    ]
+                }
+            )
+        return FakeJsonResponse({})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *a: 0)
+
+    asyncio.run(client.load_main_page())
+
+    # 无 id 的被跳过, 收集到 3 个即 break
+    assert {"f1", "f2", "f3"} <= set(client.items)
+
+
+def test_load_main_page_falls_back_to_folder_items_when_latest_empty(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        if path.endswith("/Views"):
+            return FakeJsonResponse({"Items": [{"Id": "col1", "CollectionType": "movies"}]})
+        if path.endswith("/Items/Latest"):
+            return FakeJsonResponse([])  # /Items/Latest 返回裸列表
+        if "/Items/Resume" in path:
+            return FakeJsonResponse({"Items": []})
+        if "/Items" in path:
+            return FakeJsonResponse({"Items": [{"Id": "folder1", "Name": "夹片"}]})
+        return FakeJsonResponse({})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *a: 0)
+
+    asyncio.run(client.load_main_page())
+
+    assert "folder1" in client.items
+
+
+def test_get_resume_items_sets_params(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+    recorded = {}
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        recorded["path"] = path
+        recorded["params"] = kwargs.get("params")
+        return FakeJsonResponse({"Items": [{"Id": "r1"}]})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    items = asyncio.run(client.get_resume_items(media_types=["Video"]))
+
+    assert recorded["path"] == "/Users/user-id/Items/Resume"
+    assert recorded["params"]["MediaTypes"] == "Video"
+    assert items == {"Items": [{"Id": "r1"}]}
+
+
+def test_get_resume_items_default_media_types(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+    recorded = {}
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        recorded["params"] = kwargs.get("params")
+        return FakeJsonResponse({"Items": []})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    asyncio.run(client.get_resume_items())
+
+    assert recorded["params"]["MediaTypes"] == "Video"
+
+
+def test_get_latest_items_returns_bare_array(monkeypatch):
+    # 官方 /Items/Latest 返回裸数组 (非 {"Items": [...]}), 方法须原样返回列表.
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        return FakeJsonResponse([{"Id": "latest1"}])
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    items = asyncio.run(client.get_latest_items())
+
+    assert items == [{"Id": "latest1"}]
+
+
+def test_get_item_returns_item(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        return FakeJsonResponse({"Id": "abc", "Name": "片"})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    item = asyncio.run(client.get_item("abc"))
+    assert item["Id"] == "abc"
+
+
+def test_get_random_device_returns_nonempty_string():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    for _ in range(10):
+        device = client.get_random_device()
+        assert isinstance(device, str) and device
+
+
+def test_get_random_device_all_patterns(monkeypatch):
+    import embykeeper.emby.api as api
+
+    patterns = [
+        "chinese_normal",
+        "chinese_lastname_pinyin",
+        "chinese_firstname_pinyin",
+        "english_normal",
+        "english_upper",
+        "english_name_only",
+    ]
+    monkeypatch.setattr(api.random, "choice", lambda seq: seq[0])  # device_type 固定 iPhone
+    for pattern in patterns:
+        monkeypatch.setattr(api.random, "choices", lambda pop, weights=None, k=1, _p=pattern: [_p])
+        device = api.Emby.get_random_device()
+        assert isinstance(device, str) and device
+
+
+def test_hostname_property():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    assert client.hostname == "example.com"
+
+
+def test_configured_watch_time_uses_account_when_set():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", time=123)
+    client = Emby(account)
+    assert client._configured_watch_time() == 123
+
+
+def test_get_api_base_url():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    assert client._get_api_base_url() == "https://example.com/emby"
+
+
+def test_verify_uses_account_value():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", verify=True)
+    client = Emby(account)
+    assert client.verify is True
+
+
+def test_configured_watch_time_defaults_when_config_unloaded():
+    from embykeeper.emby.api import DEFAULT_EMBY_WATCH_TIME
+
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", time=None)
+    client = Emby(account)
+    assert client._configured_watch_time() == DEFAULT_EMBY_WATCH_TIME
+
+
+def test_should_reset_env_mismatch_without_snapshot():
+    from embykeeper.emby.api import Emby
+
+    assert (
+        Emby._should_reset_env(
+            {
+                "client": "Fileball",
+                "device": "D",
+                "device_id": "I",
+                "client_version": "1.0",
+                "useragent": "UA",
+            },
+            {"client": "Hills", "device": None, "device_id": None, "client_version": None, "useragent": None},
+        )
+        is True
+    )
+
+
+def test_user_id_property_loads_credentials(monkeypatch):
+    from embykeeper.crypto import encrypt_credential
+
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    patch_cache(
+        monkeypatch,
+        {"emby.credential.example.com.user": encrypt_credential({"token": "tok", "userid": "uid"}, "pass")},
+    )
+    assert client.user_id == "uid"
+
+
+def test_is_http2_flow_control_error_delegation():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    assert client._is_http2_flow_control_error(RuntimeError("nghttp2_submit_window_update() failed"))
+    assert not client._is_http2_flow_control_error(RuntimeError("other"))
+
+
+def test_load_credentials_reads_encrypted_token(monkeypatch):
+    from embykeeper.crypto import encrypt_credential
+
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    patch_cache(
+        monkeypatch,
+        {"emby.credential.example.com.user": encrypt_credential({"token": "tok", "userid": "uid"}, "pass")},
+    )
+
+    client._load_credentials()
+
+    assert client._token == "tok"
+    assert client._user_id == "uid"
+
+
+def test_login_facade_delegates_to_transport(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._transport = SimpleNamespace(login=AsyncMock(return_value="tok"))
+
+    assert asyncio.run(client.login()) == "tok"
+
+
+def test_get_user(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "uid"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        return FakeJsonResponse({"Name": "u"})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    user = asyncio.run(client.get_user())
+    assert user["Name"] == "u"
+
+
+def test_mark_played(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "uid"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    assert asyncio.run(client.mark_played("abc")) is True
+
+
+def test_load_env_handles_invalid_cached_data(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    patch_cache(monkeypatch, {"emby.env.example.com.user": {"client": "Hills"}})  # 缺字段
+
+    client._load_env()
+
+    assert client._env is None
+
+
+def test_get_fake_env_resets_cached_fileball(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    patch_cache(
+        monkeypatch,
+        {
+            "emby.env.example.com.user": {
+                "client": "Fileball",
+                "device": "D",
+                "device_id": "I",
+                "client_version": "1.0",
+                "useragent": "UA",
+            }
+        },
+    )
+    monkeypatch.setattr(client, "get_random_device", lambda: "Random iPhone")
+
+    env = client.get_fake_env()
+
+    assert env.client == "Hills"
+    assert env.device == "Random iPhone"
+
+
+def test_load_main_page_skips_items_without_id(monkeypatch):
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    client._user_id = "user-id"
+
+    async def fake_request(method, path, _session_kwargs=None, **kwargs):
+        if path.endswith("/Views"):
+            return FakeJsonResponse({"Items": [{"Id": "col1", "CollectionType": "movies"}]})
+        if path.endswith("/Items/Latest"):
+            return FakeJsonResponse(
+                [{"Name": "无id"}, {"Id": "ok", "Name": "有"}]
+            )  # /Items/Latest 返回裸列表
+        return FakeJsonResponse({"Items": []})
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr("embykeeper.emby.api.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("embykeeper.emby.api.random.uniform", lambda *a: 0)
+
+    asyncio.run(client.load_main_page())
+
+    assert "ok" in client.items
 
 
 def test_watch_logs_short_length_summary_when_all_candidates_are_too_short(monkeypatch):

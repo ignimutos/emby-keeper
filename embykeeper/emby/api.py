@@ -303,8 +303,8 @@ class Emby:
         await asyncio.sleep(random.uniform(0.1, 0.3))
 
         for cid in col_ids[:25]:
-            items = await self.get_latest_items(parent_id=cid)
-            for item in items:
+            # /Items/Latest 官方返回裸数组 (与其它列表接口的 {"Items": [...]} 不同)
+            for item in await self.get_latest_items(parent_id=cid):
                 try:
                     iid = item["Id"]
                     self.items[iid] = item
@@ -361,6 +361,7 @@ class Emby:
                 **kw,
             },
         )
+        # 官方 /Items/Latest 返回裸数组 (非 {"Items": [...]}), 直接返回列表.
         return _parse_json(resp)
 
     async def get_resume_items(
@@ -393,9 +394,7 @@ class Emby:
 
     async def get_resume_item(self, iid):
         items = await self.get_resume_items(media_types=["Video"], limit=50)
-        if isinstance(items, dict):
-            items = items.get("Items", [])
-        return next((item for item in items if item.get("Id") == iid), None)
+        return next((item for item in items.get("Items", []) if item.get("Id") == iid), None)
 
     async def get_folder_items(
         self,

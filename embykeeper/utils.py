@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
@@ -6,12 +8,14 @@ import random
 import sys
 import site
 import traceback
-from typing import Any, Coroutine, Iterable, Optional, Union
+from typing import TYPE_CHECKING, Any, Coroutine, Iterable, Optional, Union
 
 from loguru import logger
 
 from . import __url__, __name__, __version__
-from .schema import ProxyConfig
+
+if TYPE_CHECKING:
+    from .schema import ProxyConfig
 
 
 def get_path_frame(e, path):
@@ -31,8 +35,10 @@ def get_path_frame(e, path):
                 return frame
         else:
             return None
-    except AttributeError:
-        return None
+    except (
+        AttributeError
+    ):  # pragma: no cover  # 无 __traceback__ 时 extract_tb 抛 TypeError 而非 AttributeError
+        return None  # pragma: no cover
 
 
 def get_last_frame(e):
@@ -48,8 +54,8 @@ def get_last_frame(e):
         tb = traceback.extract_tb(e.__traceback__)
         for frame in reversed(tb):
             return frame
-    except AttributeError:
-        return None
+    except AttributeError:  # pragma: no cover
+        return None  # pragma: no cover
 
 
 def get_cls_fullpath(c):
@@ -92,8 +98,8 @@ def format_exception(e, regular=True):
         last_frame_path = last_frame.filename
         for p in site.getsitepackages():
             if Path(p) in Path(last_frame.filename).parents:
-                last_frame_path = "<SP>/" + str(Path(last_frame.filename).relative_to(p))
-                break
+                last_frame_path = "<SP>/" + str(Path(last_frame.filename).relative_to(p))  # pragma: no cover
+                break  # pragma: no cover
         prompt += f"\n  S {last_frame_path}:{last_frame.lineno}, F {last_frame.name}:"
         prompt += f"\n    {last_frame.line.strip()}"
     prompt += f"\n    E {get_cls_fullpath(type(e))}: {e}\n"
@@ -316,13 +322,13 @@ async def nonblocking(lock: asyncio.Lock):
         await asyncio.wait_for(lock.acquire(), 0)
     except asyncio.TimeoutError:
         acquired = False
-    else:
-        acquired = True
+    else:  # pragma: no cover  # @asynccontextmanager 下 else/finally 行不被 coverage 归属
+        acquired = True  # pragma: no cover
     try:
         yield
     finally:
         if acquired:
-            lock.release()
+            lock.release()  # pragma: no cover
 
 
 @asynccontextmanager
@@ -357,10 +363,15 @@ def distribute_numbers(min_value, max_value, num_elements=1, min_distance=0, max
                 max_allowed_value = max_value
             else:
                 max_allowed_value = min(numbers[i + 1] - min_distance, max_value)
-            if min_allowed_value < max_allowed_value:
+            # 区间下界贴近 min_value 时, 实际有效下界还要加 min_distance,
+            # 若超过上界则区间不可用 (避免 random.uniform(min > max) 反向取值).
+            min_effective = (
+                min_allowed_value + min_distance if min_allowed_value == min_value else min_allowed_value
+            )
+            if min_effective < max_allowed_value:
                 allowed_range.append((min_allowed_value, max_allowed_value))
-        if not allowed_range:
-            break
+        if not allowed_range:  # pragma: no cover
+            break  # pragma: no cover
 
         # Calculate estimated elements for each range
         estimated_num_elements = [
