@@ -9,16 +9,32 @@ on:
     types: [released]
 
 permissions:
+  id-token: write
   contents: read
 
 env:
-  IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/embykeeper
+  INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+  INFISICAL_PROJECT_SLUG: ${{ vars.INFISICAL_PROJECT_SLUG }}
+  INFISICAL_ENV_SLUG: ${{ vars.INFISICAL_ENV_SLUG || 'dev' }}
+  INFISICAL_DOMAIN: ${{ vars.INFISICAL_DOMAIN || 'https://app.infisical.com' }}
+  INFISICAL_SECRET_PATH: ${{ vars.INFISICAL_SECRET_PATH || '/' }}
+  INFISICAL_RECURSIVE: ${{ vars.INFISICAL_RECURSIVE || 'true' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Inject secrets from Infisical
+        uses: Infisical/secrets-action@v1.0.17
+        with:
+          method: "oidc"
+          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
+          domain: ${{ env.INFISICAL_DOMAIN }}
+          project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
+          secret-path: ${{ env.INFISICAL_SECRET_PATH }}
+          recursive: ${{ env.INFISICAL_RECURSIVE }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
@@ -27,12 +43,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.DOCKERHUB_USER }}/embykeeper
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
