@@ -27,7 +27,10 @@ class FakeResponse:
         self.text = text
 
     def json(self):
-        return {}
+        try:
+            return json.loads(self.text)
+        except (ValueError, TypeError):
+            return {}
 
 
 class FakeSession:
@@ -290,6 +293,18 @@ def test_request_raises_status_error_on_non_ok_status(frozen_sleep):
 
     with pytest.raises(EmbyStatusError):
         asyncio.run(t._request("GET", "/x"))
+
+
+def test_request_false_403_reports_server_error_code_not_cloudflare(frozen_sleep):
+    """403 且 body 为 Emby 自己的 JSON 时, 不应误报 Cloudflare, 并保留 ErrorCode."""
+    session = FakeSession([FakeResponse(403, text='{"ErrorCode":"grant_scope_mismatch","Message":"no"}')])
+    owner = FakeOwner(session=session)
+    t = EmbyTransport(owner)
+
+    with pytest.raises(EmbyStatusError) as exc_info:
+        asyncio.run(t._request("GET", "/x"))
+    assert exc_info.value.error_code == "grant_scope_mismatch"
+    assert "Cloudflare" not in str(exc_info.value)
 
 
 def test_request_raises_connect_error_when_retries_exhausted_without_error(frozen_sleep):

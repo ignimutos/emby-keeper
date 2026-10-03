@@ -17,7 +17,12 @@ from typing import Iterable, Optional, Union
 from embykeeper.schema import EmbyAccount
 from embykeeper.utils import show_exception, truncate_str
 
-from embykeeper.emby.errors import EmbyError, EmbyPlayError, EmbyStoppedReportError
+from embykeeper.emby.errors import (
+    EmbyError,
+    EmbyPlayError,
+    EmbyStoppedReportError,
+    EmbyStreamRejectedError,
+)
 from embykeeper.emby.notification import EmbyPlaybackSnapshot, EmbyWatchResult, has_userdata_update
 
 
@@ -108,6 +113,8 @@ class KeepaliveRun:
             reasons.append(f"{failed_reasons['wrong_type']} 个非视频项目")
         if failed_reasons["short_length"]:
             reasons.append(f"{failed_reasons['short_length']} 个视频时长不足 (未开启 allow_multiple)")
+        if failed_reasons.get("stream_rejected"):
+            reasons.append(f"{failed_reasons['stream_rejected']} 个视频被服务器拒绝播放")
         return (
             ", ".join(reasons) if reasons else "未记录到候选过滤原因"
         )  # pragma: no cover  # 仅在无失败原因时触发
@@ -142,7 +149,13 @@ class KeepaliveRun:
         played_videos = 0
         retry = 0
         failed_items = []
-        failed_reasons = {"invalid": 0, "no_length": 0, "wrong_type": 0, "short_length": 0}
+        failed_reasons = {
+            "invalid": 0,
+            "no_length": 0,
+            "wrong_type": 0,
+            "short_length": 0,
+            "stream_rejected": 0,
+        }
 
         while True:
             shuffled_items = list(client.items.items())
@@ -258,6 +271,12 @@ class KeepaliveRun:
                             log.info(f"等待 {rt:.0f} 秒后播放下一个.")
                             await asyncio.sleep(rt)
                             break
+                    except EmbyStreamRejectedError as e:
+                        # 服务器拒绝该条目的媒体流, 属条目级失败: 重试同一条目无用, 换下一个.
+                        failed_reasons["stream_rejected"] += 1
+                        failed_items.append(iid)
+                        log.warning(f'服务器拒绝播放 "{name}", 跳过该视频换下一个: {e}.')
+                        break
                     except EmbyError as e:
                         retry += 1
                         if retry > self.max_retries:

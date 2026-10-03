@@ -12,6 +12,7 @@ _get_session) 的 monkeypatch 语义——这是传输逻辑归属本模块、�
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import re
 from datetime import datetime
@@ -186,11 +187,30 @@ class EmbyTransport:
                 elif resp.status_code == 403 or (
                     not kw.get("stream") and ("cf-wrapper" in resp.text or "Just a moment" in resp.text)
                 ):
+                    body = await self._read_error_body(resp)
+                    headers = getattr(resp, "headers", {}) or {}
+                    if "cf-wrapper" in body or "Just a moment" in body or "cf-mitigated" in headers:
+                        raise EmbyStatusError(
+                            "访问失败: 服务器返回 HTTP 403 或 Cloudflare 验证页 (可能启用了 Cloudflare 保护)"
+                        )
+                    error_code = self._extract_error_code(body)
+                    detail = f": {error_code}" if error_code else ""
                     raise EmbyStatusError(
-                        "访问失败: 服务器返回 HTTP 403 或 Cloudflare 验证页 (可能启用了 Cloudflare 保护)"
+                        f"访问失败: 服务器返回 HTTP 403{detail} (URL = {url})", error_code=error_code
                     )
                 elif not resp.ok and not _login:
-                    raise EmbyStatusError(f"访问失败: 异常 HTTP 代码 {resp.status_code} (URL = {url})")
+                    body = await self._read_error_body(resp)
+                    headers = getattr(resp, "headers", {}) or {}
+                    if "cf-wrapper" in body or "Just a moment" in body or "cf-mitigated" in headers:
+                        raise EmbyStatusError(
+                            "访问失败: 服务器返回 Cloudflare 验证页 (可能启用了 Cloudflare 保护)"
+                        )
+                    error_code = self._extract_error_code(body)
+                    detail = f": {error_code}" if error_code else ""
+                    raise EmbyStatusError(
+                        f"访问失败: 异常 HTTP 代码 {resp.status_code}{detail} (URL = {url})",
+                        error_code=error_code,
+                    )
                 else:
                     return resp
             except RequestsError as e:
@@ -207,6 +227,29 @@ class EmbyTransport:
     def _is_http2_flow_control_error(self, error: Exception) -> bool:
         message = str(error)
         return "nghttp2_submit_window_update()" in message or "Flow control error" in message
+
+    @staticmethod
+    async def _read_error_body(resp: Response) -> str:
+        """读取错误响应体. 流式响应的 body 不在 resp.text 中, 需显式读取."""
+        if resp.text:
+            return resp.text
+        acontent = getattr(resp, "acontent", None)
+        if acontent is not None:
+            try:
+                content = await acontent()
+            except Exception:
+                return ""
+            if isinstance(content, (bytes, bytearray)):
+                return content.decode("utf-8", "replace")
+            return content or ""
+        return ""
+
+    @staticmethod
+    def _extract_error_code(body: str) -> str | None:
+        try:
+            return (json.loads(body) or {}).get("ErrorCode")
+        except (ValueError, TypeError):
+            return None
 
     # --- 流任务中止 ---
     #

@@ -883,7 +883,7 @@ def test_play_logs_exception_type_when_progress_update_error_has_empty_message(m
     }
 
     assert asyncio.run(client.play(item, time=10)) is True
-    assert debug_messages == ["播放状态设定错误: TimeoutError"]
+    assert "播放状态设定错误: TimeoutError" in debug_messages
 
 
 def test_play_raises_stopped_report_error_when_stopped_request_fails(monkeypatch):

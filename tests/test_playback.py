@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from embykeeper.emby.playback import PlaybackSession
-from embykeeper.emby.errors import EmbyPlayError, EmbyStoppedReportError
+from embykeeper.emby.errors import (
+    EmbyPlayError,
+    EmbyStatusError,
+    EmbyStoppedReportError,
+    EmbyStreamRejectedError,
+)
 
 
 class RecordingLog:
@@ -263,3 +268,137 @@ def test_session_warns_when_stream_task_raises(frozen_playback_random, monkeypat
     monkeypatch.setattr(playback.asyncio, "create_task", lambda coro: coro.close() or BoomTask())
     client = FakePlaybackClient()
     assert run(client, ITEM) is True
+
+
+def test_session_raises_stream_rejected_when_grant_denied(frozen_playback_random, monkeypatch):
+    import embykeeper.emby.playback as playback
+    from embykeeper.emby.errors import EmbyStatusError, EmbyStreamRejectedError
+
+    class RejectedTask:
+        def cancel(self):
+            pass
+
+        def done(self):
+            return True
+
+        def cancelled(self):
+            return False
+
+        def exception(self):
+            return EmbyStatusError(
+                "访问失败: 服务器返回 HTTP 403: grant_scope_mismatch", error_code="grant_scope_mismatch"
+            )
+
+    monkeypatch.setattr(playback.asyncio, "create_task", lambda coro: coro.close() or RejectedTask())
+    client = FakePlaybackClient()
+
+    with pytest.raises(EmbyStreamRejectedError):
+        run(client, ITEM)
+
+
+# --- 租约中途失效 (409 playback_lease_inactive) 的分类与分层恢复 ---
+
+START_TICK = ITEM["UserData"]["PlaybackPositionTicks"]  # 5400000000, 用于区分初始与循环上报
+
+
+class LeaseRejectingClient(FakePlaybackClient):
+    """让循环中的进度上报返回租约失效 (409 playback_lease_inactive).
+
+    loop_rejections: 恢复触发前需被拒的循环上报次数; None 表示未恢复前始终拒绝.
+    recover_on: "playing" -> 重发 /Sessions/Playing 即恢复; "ping" -> 需 /Sessions/Playing/Ping;
+                None -> 永不恢复.
+    统计 playing_posts / ping_posts 以断言恢复机制.
+    """
+
+    def __init__(self, loop_rejections, recover_on, **kwargs):
+        super().__init__(**kwargs)
+        self.loop_rejections = loop_rejections
+        self.recover_on = recover_on
+        self.loop_seen = 0
+        self.playing_posts = 0
+        self.ping_posts = 0
+        self._recovered = False
+
+    @staticmethod
+    def _lease_error():
+        return EmbyStatusError(
+            "访问失败: 异常 HTTP 代码 409: playback_lease_inactive",
+            error_code="playback_lease_inactive",
+        )
+
+    @staticmethod
+    def _is_loop_progress(payload):
+        return payload.get("EventName") == "TimeUpdate" and payload.get("PositionTicks") != START_TICK
+
+    async def _request(self, method, path, _session_kwargs=None, **kwargs):
+        payload = kwargs.get("json") or {}
+        if method == "POST" and path == "/Sessions/Playing":
+            self.playing_posts += 1
+            if self.recover_on == "playing" and self.playing_posts > 1:  # 第 1 次为初始, 重发才算恢复
+                self._recovered = True
+        if method == "POST" and path == "/Sessions/Playing/Ping":
+            self.ping_posts += 1
+            if self.recover_on == "ping":
+                self._recovered = True
+        if (
+            method == "POST"
+            and path == "/Sessions/Playing/Progress"
+            and self._is_loop_progress(payload)
+            and not self._recovered
+        ):
+            self.loop_seen += 1
+            if self.loop_rejections is None or self.loop_seen <= self.loop_rejections:
+                raise self._lease_error()
+        return await super()._request(method, path, _session_kwargs=_session_kwargs, **kwargs)
+
+
+def test_session_recovers_lease_by_reasserting_start(frozen_playback_random):
+    # 前 2 次循环上报被拒 -> 触发恢复; 机制 (a) 重发 PlaybackStart 后探测即成功.
+    client = LeaseRejectingClient(loop_rejections=2, recover_on="playing")
+    assert run(client, ITEM, time=200) is True
+    assert client.playing_posts == 2  # 初始 + 恢复时重发一次
+    assert client.ping_posts == 0  # (a) 已足够, 无需 Ping
+
+
+def test_session_recovers_lease_by_ping_fallback(frozen_playback_random):
+    # 重发 PlaybackStart 后探测仍被拒, 回退到 Ping 才恢复.
+    client = LeaseRejectingClient(loop_rejections=None, recover_on="ping")
+    assert run(client, ITEM, time=200) is True
+    assert client.ping_posts == 1
+    assert client.playing_posts == 2  # 初始 + 恢复重发
+
+
+def test_session_raises_stream_rejected_when_lease_never_recovers(frozen_playback_random):
+    client = LeaseRejectingClient(loop_rejections=None, recover_on=None)
+    with pytest.raises(EmbyStreamRejectedError) as exc_info:
+        run(client, ITEM, time=200)
+    assert "playback_lease_inactive" in str(exc_info.value)
+    assert client.playing_posts <= 2  # 初始 + 至多一次恢复重发
+    assert client.ping_posts <= 1  # 恢复有界
+
+
+def test_session_tolerates_single_transient_lease_rejection(frozen_playback_random):
+    # 仅 1 次循环上报被拒 (未达触发阈值), 不触发恢复, 会话照常成功.
+    client = LeaseRejectingClient(loop_rejections=1, recover_on="playing")
+    assert run(client, ITEM, time=200) is True
+    assert client.playing_posts == 1  # 未发生恢复
+    assert client.ping_posts == 0
+
+
+def test_session_final_pause_lease_inactive_raises_stream_rejected(frozen_playback_random):
+    class FinalPauseLeaseClient(FakePlaybackClient):
+        async def _request(self, method, path, _session_kwargs=None, **kwargs):
+            payload = kwargs.get("json") or {}
+            if (
+                path == "/Sessions/Playing/Progress"
+                and payload.get("EventName") == "Pause"
+                and payload.get("PositionTicks") != START_TICK  # 收尾 Pause, 非初始 Pause
+            ):
+                raise EmbyStatusError(
+                    "访问失败: 异常 HTTP 代码 409: playback_lease_inactive",
+                    error_code="playback_lease_inactive",
+                )
+            return await super()._request(method, path, _session_kwargs=_session_kwargs, **kwargs)
+
+    with pytest.raises(EmbyStreamRejectedError):
+        run(FinalPauseLeaseClient(), ITEM)

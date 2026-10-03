@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from embykeeper.emby.keepalive import KeepaliveRun
-from embykeeper.emby.errors import EmbyPlayError, EmbyStoppedReportError
+from embykeeper.emby.errors import EmbyPlayError, EmbyStoppedReportError, EmbyStreamRejectedError
 from embykeeper.emby.notification import EmbyWatchResult
 
 
@@ -299,6 +299,43 @@ def test_run_retries_connect_error(frozen_random):
 
     assert result.success is True
     assert client._play.await_count == 2
+
+
+def test_run_switches_item_when_stream_rejected(frozen_random):
+    item_b = {"Id": "def456", "Name": "第二个", "MediaType": "Video", "RunTimeTicks": 18900000000}
+
+    def play_reject_first(*args, **kwargs):
+        if not getattr(play_reject_first, "called", False):
+            play_reject_first.called = True
+            raise EmbyStreamRejectedError("服务器拒绝媒体流 (grant_scope_mismatch)")
+        return True
+
+    client = FakeClient(
+        account=make_account(),
+        items={"abc123": ITEM, "def456": item_b},
+        play_side_effect=play_reject_first,
+        get_item_side_effect=[before_item(), before_item(), after_item()],
+    )
+    result = sync(KeepaliveRun(client=client, max_retries=0).run())
+
+    assert result.success is True
+    assert client._play.await_count == 2  # 被拒条目 + 下一个条目
+
+
+def test_run_fails_honestly_when_all_items_lease_rejected(frozen_random):
+    # 所有候选条目均因租约失效被拒: 应如实失败并换片, 绝不谎报成功.
+    item_b = {"Id": "def456", "Name": "第二个", "MediaType": "Video", "RunTimeTicks": 18900000000}
+    client = FakeClient(
+        account=make_account(),
+        items={"abc123": ITEM, "def456": item_b},
+        play_side_effect=EmbyStreamRejectedError("服务器持续拒绝播放状态 (playback_lease_inactive)"),
+        get_item_side_effect=[before_item(), before_item()],
+    )
+    result = sync(KeepaliveRun(client=client, max_retries=0).run())
+
+    assert result.success is False
+    assert result.failure_stage == "获取视频失败"
+    assert any("服务器拒绝播放" in w for w in client.log.warnings)
 
 
 def test_run_success_when_play_count_missing(frozen_random):

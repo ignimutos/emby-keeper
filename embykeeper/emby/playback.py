@@ -21,6 +21,7 @@ from embykeeper.emby.errors import (
     EmbyPlayError,
     EmbyRequestError,
     EmbyStatusError,
+    EmbyStreamRejectedError,
     EmbyStoppedReportError,
 )
 
@@ -127,6 +128,21 @@ class PlaybackSession:
             iname = "(请求播放的视频)"
         return iid, iname
 
+    # 服务器拒绝媒体流的 ErrorCode (Emby 4.9 playback grant 等). 命中即条目级失败.
+    STREAM_REJECTED_ERROR_CODES = {"grant_scope_mismatch", "playback_lease_inactive", "invalid_token"}
+
+    @classmethod
+    def _stream_rejected(cls, exc: EmbyStatusError) -> bool:
+        return getattr(exc, "error_code", None) in cls.STREAM_REJECTED_ERROR_CODES
+
+    # 播放租约中途失效的恢复策略: 连续 N 次被拒才尝试恢复 (单次瞬时可容忍),
+    # 每会话最多恢复轮数 (有界). 见 _recover_lease.
+    LEASE_RECOVERY_TRIGGER = 2
+    MAX_LEASE_RECOVERIES = 2
+    # 恢复时是否重取 PlaybackInfo 换新 PlaySessionId 以重建会话. 默认关闭, 仅当实测
+    # 表明重发 PlaybackStart / Ping 均无效时开启 (改变 PlaySessionId 可能反而破坏状态).
+    RECOVER_WITH_NEW_SESSION = False
+
     async def _fetch_playback_info(self, iid: str) -> dict:
         """读取媒体源并解析会话所需字段, 空媒体源时回退为随机假 id."""
         client = self.client
@@ -169,6 +185,13 @@ class PlaybackSession:
         playback_info = _parse_json(resp)
 
         media_sources = playback_info.get("MediaSources") or []
+        # 诊断: 仅列键名 (不 dump 值, 避免泄漏 token/敏感参数), 供排查面板下发的
+        # 租约/过期相关字段 (如被丢弃的 RequiresOpening/OpenToken 等).
+        client.log.debug(
+            f"PlaybackInfo 字段: {sorted(playback_info.keys())}, "
+            f"媒体源字段: {sorted(media_sources[0].keys()) if media_sources else []}, "
+            f"PlaySessionId={playback_info.get('PlaySessionId', '')!r}."
+        )
         if media_sources:
             media_source = media_sources[0]
             media_source_id = media_source["Id"]
@@ -253,6 +276,92 @@ class PlaybackSession:
                 data["EventName"] = event_name
             return data
 
+        recoveries_done = 0
+
+        async def _quiet(coro):
+            """执行一次租约恢复请求, 忽略其自身异常 (结果由后续 _probe 判定)."""
+            try:
+                await coro
+            except Exception as e:
+                client.log.debug(f"租约恢复请求失败 (忽略): {type(e).__name__}: {e}")
+
+        async def _probe(tick) -> bool:
+            """用一次真实进度上报探测租约是否已恢复."""
+            try:
+                await client._request(
+                    method="POST",
+                    path="/Sessions/Playing/Progress",
+                    params=session_params,
+                    headers=session_headers,
+                    json=get_playing_data(tick, event_name="TimeUpdate"),
+                )
+                return True
+            except Exception:
+                return False
+
+        async def _recover_lease(tick) -> bool:
+            """租约中途失效时的分层恢复: 先轻量续租, 再重建会话. 返回是否恢复成功."""
+            nonlocal recoveries_done, play_session_id
+            if recoveries_done >= self.MAX_LEASE_RECOVERIES:
+                return False
+            recoveries_done += 1
+
+            def _log_step(name, ok):
+                client.log.debug(
+                    f"租约恢复[{name}]: tick={tick}, PlaySessionId={play_session_id!r}, "
+                    f"探测={'ok' if ok else 'rejected'}."
+                )
+
+            # (a) 重发 PlaybackStart —— 本面板已验证接受过的载荷.
+            await _quiet(
+                client._request(
+                    method="POST",
+                    path="/Sessions/Playing",
+                    params=session_params,
+                    headers=session_headers,
+                    json=get_playing_data(tick),
+                )
+            )
+            ok = await _probe(tick)
+            _log_step("重发Playing", ok)
+            if ok:
+                return True
+
+            # (b) 规范租约心跳 Ping (携带当前 playSessionId).
+            await _quiet(
+                client._request(
+                    method="POST",
+                    path="/Sessions/Playing/Ping",
+                    params=session_params,
+                    headers=session_headers,
+                    json={"PlaySessionId": play_session_id},
+                )
+            )
+            ok = await _probe(tick)
+            _log_step("Ping", ok)
+            if ok:
+                return True
+
+            # (c) 重建会话: 重取 PlaybackInfo 换新 PlaySessionId 后再上报 (默认关闭).
+            if self.RECOVER_WITH_NEW_SESSION:
+                info = await self._fetch_playback_info(iid)
+                play_session_id = info["play_session_id"]
+                await _quiet(
+                    client._request(
+                        method="POST",
+                        path="/Sessions/Playing",
+                        params=session_params,
+                        headers=session_headers,
+                        json=get_playing_data(tick),
+                    )
+                )
+                ok = await _probe(tick)
+                _log_step("重建会话", ok)
+                if ok:
+                    return True
+
+            return False
+
         await asyncio.sleep(random.uniform(1, 3))
 
         stream_url = (
@@ -304,6 +413,7 @@ class PlaybackSession:
             last_tick = start_tick
             last_report_t = t
             progress_errors = 0  # 连续失败计数 (成功即归零), 避免偶发错误累积导致误判
+            lease_rejections = 0  # 连续租约拒绝计数 (与 progress_errors 互斥)
             report_interval = 5  # Start with 5 seconds
             report_count = 0
             max_interval = 300  # 5 minutes in seconds
@@ -336,13 +446,29 @@ class PlaybackSession:
                         30,
                     )
                     progress_errors = 0  # 本次成功, 重置连续失败计数
+                    lease_rejections = 0
                 except Exception as e:
                     detail = str(e).strip()
                     if detail:
                         client.log.debug(f"播放状态设定错误: {type(e).__name__}: {detail}")
                     else:
                         client.log.debug(f"播放状态设定错误: {type(e).__name__}")
-                    progress_errors += 1
+                    if isinstance(e, EmbyStatusError) and self._stream_rejected(e):
+                        # 服务器拒绝播放状态 (如 playback_lease_inactive). 单次瞬时可容忍;
+                        # 连续多次则视为租约中途失效, 尝试分层恢复.
+                        lease_rejections += 1
+                        progress_errors = 0
+                        client.log.debug(f"播放状态被服务器拒绝, 连续第 {lease_rejections} 次.")
+                        if lease_rejections >= self.LEASE_RECOVERY_TRIGGER:
+                            if await _recover_lease(tick):
+                                client.log.info("已重新建立播放会话, 继续上报进度.")
+                                lease_rejections = 0
+                            else:
+                                detail = f" ({e.error_code})" if e.error_code else ""
+                                raise EmbyStreamRejectedError(f"服务器持续拒绝播放状态{detail}") from e
+                    else:
+                        progress_errors += 1
+                        lease_rejections = 0
             await asyncio.sleep(random.uniform(1, 3))
         finally:
             # 不能 cancel 后 await: curl_cffi 流任务不可取消 (见 transport.stop_stream 注释).
@@ -354,6 +480,12 @@ class PlaybackSession:
                 if exc is not None:
                     client.log.warning(f"模拟播放时, 访问流媒体文件失败.")
                     show_exception(exc)
+                    # 服务器策略拒绝媒体流 (如 playback grant) 属条目级失败: 流未建立时
+                    # 后续进度上报只会返回 409 playback_lease_inactive, 重试同一条目也
+                    # 不会成功, 应上抛让上层换下一个视频.
+                    if isinstance(exc, EmbyStatusError) and self._stream_rejected(exc):
+                        detail = f" ({exc.error_code})" if exc.error_code else ""
+                        raise EmbyStreamRejectedError(f"服务器拒绝媒体流{detail}: {exc}") from exc
 
         final_percentage = random.uniform(0.95, 1.0)
         final_tick = max(last_tick, start_tick + int(time * final_percentage * 10000000))
@@ -366,6 +498,10 @@ class PlaybackSession:
                 json=get_playing_data(final_tick, event_name="Pause", paused=True),
             )
         except Exception as e:
+            # 收尾时仍被拒租约是最强信号: 本会话的上报基本未被接受, 重试同条目无意义.
+            if isinstance(e, EmbyStatusError) and self._stream_rejected(e):
+                detail = f" ({e.error_code})" if e.error_code else ""
+                raise EmbyStreamRejectedError(f"服务器持续拒绝播放状态{detail}: {e}") from e
             raise EmbyPlayError(f"由于连接错误或服务器错误无法停止播放: {e}")
         try:
             await client._request(
