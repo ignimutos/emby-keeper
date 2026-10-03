@@ -1,6 +1,7 @@
 import importlib
 import warnings
 
+import pytest
 from pydantic import ValidationError
 from pydantic.warnings import PydanticDeprecatedSince20
 
@@ -13,11 +14,19 @@ from embykeeper.schema import (
 
 
 def test_schema_import_avoids_pydantic_v1_validator_deprecation():
+    import embykeeper.schema as schema_module
+
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", PydanticDeprecatedSince20)
-        import embykeeper.schema as schema_module
-
-        importlib.reload(schema_module)
+        snapshot = dict(schema_module.__dict__)
+        try:
+            importlib.reload(schema_module)
+        finally:
+            # reload 会就地重绑定模块内的类对象; 还原快照, 避免影响在模块顶层
+            # `from embykeeper.schema import Config` 持有旧引用的其它测试文件
+            # (否则它们的 isinstance 会因类对象被替换而失败).
+            schema_module.__dict__.clear()
+            schema_module.__dict__.update(snapshot)
 
     deprecations = [
         warning
@@ -68,6 +77,21 @@ def test_emby_config_use_str_coerces_numbers():
 def test_emby_account_use_http_url_adds_scheme():
     account = EmbyAccount(url="example.com", username="u", password="p")
     assert str(account.url).startswith("https://example.com")
+
+
+def test_speed_limit_defaults_to_none_and_accepts_values():
+    account = EmbyAccount(url="example.com", username="u", password="p")
+    assert account.speed_limit is None
+    assert EmbyAccount(url="example.com", username="u", password="p", speed_limit=0).speed_limit == 0
+    assert EmbyConfig().speed_limit is None
+    assert EmbyConfig(speed_limit=8).speed_limit == 8
+
+
+def test_speed_limit_rejects_negative():
+    with pytest.raises(ValidationError):
+        EmbyAccount(url="example.com", username="u", password="p", speed_limit=-1)
+    with pytest.raises(ValidationError):
+        EmbyConfig(speed_limit=-1)
 
 
 # --- format_errors ---
