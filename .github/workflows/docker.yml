@@ -17,8 +17,11 @@ env:
   INFISICAL_PROJECT_ID: ${{ vars.INFISICAL_PROJECT_ID }}
   INFISICAL_ENV_SLUG: ${{ vars.INFISICAL_ENV_SLUG || 'dev' }}
   INFISICAL_DOMAIN: ${{ vars.INFISICAL_DOMAIN || 'https://app.infisical.com' }}
-  INFISICAL_SECRET_PATH: ${{ vars.INFISICAL_SECRET_PATH || '/' }}
-  INFISICAL_RECURSIVE: ${{ vars.INFISICAL_RECURSIVE || 'true' }}
+  # Scoped to this repo's own folder, non-recursive: injecting the project root
+  # dragged in unrelated secrets and shadowed names GitHub sets itself (an empty
+  # injected GITHUB_TOKEN broke setup-buildx).
+  INFISICAL_SECRET_PATH: ${{ vars.INFISICAL_SECRET_PATH || '/project/emby-keeper' }}
+  INFISICAL_RECURSIVE: ${{ vars.INFISICAL_RECURSIVE || 'false' }}
 
 jobs:
   build:
@@ -26,6 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Inject secrets from Infisical
+        if: env.INFISICAL_IDENTITY_ID != '' && env.INFISICAL_PROJECT_ID != ''
         uses: Infisical/secrets-action@v1.0.18
         with:
           method: "oidc"
@@ -35,10 +39,28 @@ jobs:
           env-slug: ${{ env.INFISICAL_ENV_SLUG }}
           secret-path: ${{ env.INFISICAL_SECRET_PATH }}
           recursive: ${{ env.INFISICAL_RECURSIVE }}
+      # Repo secrets win over Infisical: only the non-empty names are lifted into
+      # GITHUB_ENV, and because this step runs after the injection (and no later
+      # step declares these names in its own `env:`), its values override the
+      # injected ones. Add a name to the list to make it overridable.
+      - name: Overlay repo secrets
+        env:
+          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          for name in DOCKERHUB_USER DOCKERHUB_TOKEN; do
+            if [[ -n "${!name:-}" ]]; then
+              printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+            fi
+          done
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        env:
+          # The step's own env beats anything Infisical injected; an empty
+          # GITHUB_TOKEN makes the action build an empty-auth Octokit and die.
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
@@ -59,3 +81,42 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  notify:
+    if: always()
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Inject secrets from Infisical
+        if: env.INFISICAL_IDENTITY_ID != '' && env.INFISICAL_PROJECT_ID != ''
+        uses: Infisical/secrets-action@v1.0.18
+        with:
+          method: "oidc"
+          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
+          domain: ${{ env.INFISICAL_DOMAIN }}
+          project-id: ${{ env.INFISICAL_PROJECT_ID }}
+          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
+          secret-path: ${{ env.INFISICAL_SECRET_PATH }}
+          recursive: ${{ env.INFISICAL_RECURSIVE }}
+      - name: Overlay repo secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+            if [[ -n "${!name:-}" ]]; then
+              printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+            fi
+          done
+      # The job runs `if: always()`, so a repo without Telegram configured must
+      # skip here instead of failing the job with an empty token.
+      - name: Telegram Notify
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        uses: proDreams/actions-telegram-notifier@v3.0.0
+        with:
+          token: ${{ env.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ env.TELEGRAM_CHAT_ID }}
+          status: ${{ needs.build.result == 'success' && 'success' || 'failure' }}
+          notify_fields: "actor,repository,workflow,branch,commit"
