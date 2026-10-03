@@ -38,7 +38,11 @@ class PlaybackClient:
 
     def _resolve_stream_url(self, url: str) -> str: ...
 
-    async def _stream_media(self, url: str, play_session_id: str): ...
+    async def _stream_media(self, url: str, play_session_id: str, holder: dict = None): ...
+
+    def stop_stream(self, holder: dict) -> None: ...
+
+    async def await_stream_stop(self, task, timeout: float = 5.0) -> None: ...
 
 
 def playback_info_body() -> dict:
@@ -256,7 +260,8 @@ class PlaybackSession:
             if info["direct_stream_url"]
             else f"/Videos/{iid}/stream"
         )
-        stream_task = asyncio.create_task(client._stream_media(stream_url, play_session_id))
+        stream_holder: dict = {}
+        stream_task = asyncio.create_task(client._stream_media(stream_url, play_session_id, stream_holder))
         rt = random.uniform(5, 10)
         client.log.info(f'开始模拟加载视频 "{truncate_str(iname, 10)}" ({rt:.0f} 秒).')
         await asyncio.sleep(rt)
@@ -266,17 +271,17 @@ class PlaybackSession:
             try:
                 await client._request(
                     method="POST",
-                    path="/Sessions/Playing/Progress",
-                    params=session_params,
-                    headers=session_headers,
-                    json=get_playing_data(start_tick, event_name="TimeUpdate"),
-                )
-                await client._request(
-                    method="POST",
                     path="/Sessions/Playing",
                     params=session_params,
                     headers=session_headers,
                     json=get_playing_data(start_tick),
+                )
+                await client._request(
+                    method="POST",
+                    path="/Sessions/Playing/Progress",
+                    params=session_params,
+                    headers=session_headers,
+                    json=get_playing_data(start_tick, event_name="TimeUpdate"),
                 )
                 await client._request(
                     method="POST",
@@ -298,13 +303,13 @@ class PlaybackSession:
 
             last_tick = start_tick
             last_report_t = t
-            progress_errors = 0
+            progress_errors = 0  # 连续失败计数 (成功即归零), 避免偶发错误累积导致误判
             report_interval = 5  # Start with 5 seconds
             report_count = 0
             max_interval = 300  # 5 minutes in seconds
             while t > 0:
                 if progress_errors > 12:
-                    raise EmbyPlayError("播放状态设定错误次数过多")
+                    raise EmbyPlayError("播放状态设定连续错误次数过多")
                 if last_report_t and last_report_t - t > report_interval:
                     client.log.info(f'正在播放: "{truncate_str(iname, 10)}" (还剩 {t:.0f} 秒).')
                     last_report_t = t
@@ -330,6 +335,7 @@ class PlaybackSession:
                         ),
                         30,
                     )
+                    progress_errors = 0  # 本次成功, 重置连续失败计数
                 except Exception as e:
                     detail = str(e).strip()
                     if detail:
@@ -339,14 +345,15 @@ class PlaybackSession:
                     progress_errors += 1
             await asyncio.sleep(random.uniform(1, 3))
         finally:
-            stream_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                client.log.warning(f"模拟播放时, 访问流媒体文件失败.")
-                show_exception(e)
+            # 不能 cancel 后 await: curl_cffi 流任务不可取消 (见 transport.stop_stream 注释).
+            # 改为触发 quit_now 让流自行结束, 并有超时兜底, 保证会话一定能收尾.
+            client.stop_stream(stream_holder)
+            await client.await_stream_stop(stream_task)
+            if hasattr(stream_task, "done") and stream_task.done() and not stream_task.cancelled():
+                exc = stream_task.exception()
+                if exc is not None:
+                    client.log.warning(f"模拟播放时, 访问流媒体文件失败.")
+                    show_exception(exc)
 
         final_percentage = random.uniform(0.95, 1.0)
         final_tick = max(last_tick, start_tick + int(time * final_percentage * 10000000))

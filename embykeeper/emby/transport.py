@@ -208,6 +208,34 @@ class EmbyTransport:
         message = str(error)
         return "nghttp2_submit_window_update()" in message or "Flow control error" in message
 
+    # --- 流任务中止 ---
+    #
+    # curl_cffi 的异步流任务不响应 task.cancel(): 其 Response.aclose() 会等待内部
+    # astream_task, 而取消信号传不到那一层, 于是 await task 永久挂起 (实测 0.15/0.16
+    # cancel 后 8 秒以上不返回)。必须改用 Response.quit_now 事件让底层读写循环自行退出。
+
+    @staticmethod
+    def stop_stream(holder: dict) -> None:
+        """请求中止正在进行的流: 触发 curl_cffi 的 quit_now 事件 (幂等)."""
+        resp = holder.get("resp")
+        quit_now = getattr(resp, "quit_now", None)
+        if quit_now is not None:
+            quit_now.set()
+
+    @staticmethod
+    async def await_stream_stop(task, timeout: float = 5.0) -> None:
+        """等待流任务自行退出; 超时则放弃等待, 绝不阻塞会话收尾.
+
+        用 asyncio.wait 而非 wait_for: wait_for 超时会 cancel 目标并再次 await, 而流任务
+        不可取消, 会立刻把会话重新挂死。wait 超时只是返回, 放生任务。
+        """
+        if not isinstance(task, asyncio.Future):
+            return  # 非真实任务 (测试替身), 无需等待
+        try:
+            await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+
     # --- 流媒体模拟 ---
 
     async def _open_stream_with_fallback(self, url: str, length: int, play_session_id: str):
@@ -232,13 +260,15 @@ class EmbyTransport:
             },
         )
 
-    async def _stream_media(self, url: str, play_session_id: str):
+    async def _stream_media(self, url: str, play_session_id: str, holder: dict = None):
         owner = self.owner
+        holder = holder if holder is not None else {}
         length = 0
         last_err_time = datetime.now()
         consecutive_errors = 0
         while True:
             resp = await owner._open_stream_with_fallback(url, length, play_session_id)
+            holder["resp"] = resp  # 供 stop_stream 中止该流
             try:
                 async for chunk in resp.aiter_content(chunk_size=1024):
                     length += len(chunk)
@@ -254,6 +284,7 @@ class EmbyTransport:
                     continue
                 raise
             finally:
+                holder["resp"] = None
                 await resp.aclose()
 
     # --- 认证 ---

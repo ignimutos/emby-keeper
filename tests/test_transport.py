@@ -380,6 +380,47 @@ def test_stream_media_reraises_when_error_within_window(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_stop_stream_sets_quit_now():
+    class Quit:
+        def __init__(self):
+            self.set_called = False
+
+        def set(self):
+            self.set_called = True
+
+    t = EmbyTransport(FakeOwner())
+    holder = {"resp": SimpleNamespace(quit_now=Quit())}
+    t.stop_stream(holder)
+    assert holder["resp"].quit_now.set_called
+
+
+def test_stop_stream_is_noop_without_response_or_quit_now():
+    t = EmbyTransport(FakeOwner())
+    t.stop_stream({})  # 无 resp
+    t.stop_stream({"resp": SimpleNamespace()})  # 无 quit_now
+
+
+def test_await_stream_stop_returns_when_task_completes():
+    async def main():
+        task = asyncio.create_task(asyncio.sleep(0))
+        await asyncio.sleep(0)
+        await EmbyTransport(FakeOwner()).await_stream_stop(task, timeout=1)
+        assert task.done()
+
+    asyncio.run(main())
+
+
+def test_await_stream_stop_does_not_block_on_stuck_task():
+    async def main():
+        task = asyncio.create_task(asyncio.sleep(100))  # 模拟不响应中止的流任务
+        t = EmbyTransport(FakeOwner())
+        await t.await_stream_stop(task, timeout=0.05)  # 必须按时返回, 不挂起
+        assert not task.done()
+        task.cancel()
+
+    asyncio.run(main())
+
+
 def test_resolve_stream_url_returns_absolute_url():
     t = EmbyTransport(FakeOwner())
     assert t._resolve_stream_url("https://cdn.example.com/x.mkv") == "https://cdn.example.com/x.mkv"

@@ -31,6 +31,15 @@ class DummyTask:
     def cancel(self):
         pass
 
+    def done(self):
+        return True
+
+    def cancelled(self):
+        return True
+
+    def exception(self):
+        return None
+
     def __await__(self):
         async def _cancelled():
             raise asyncio.CancelledError
@@ -71,8 +80,14 @@ class FakePlaybackClient:
         self.requests.append(("resolve_stream", url))
         return self.resolved_url
 
-    async def _stream_media(self, url, play_session_id):
+    async def _stream_media(self, url, play_session_id, holder=None):
         self.requests.append(("stream", url, play_session_id))
+
+    def stop_stream(self, holder):
+        self.requests.append(("stop_stream", None, None))
+
+    async def await_stream_stop(self, task, timeout=5.0):
+        self.requests.append(("await_stream_stop", None, None))
 
     async def _request(self, method, path, _session_kwargs=None, **kwargs):
         self.requests.append((method, path, kwargs.get("json")))
@@ -110,7 +125,7 @@ def test_session_runs_full_playback_sequence(frozen_playback_random):
     client = FakePlaybackClient()
     assert run(client, ITEM) is True
 
-    paths = [req[0] + " " + req[1] for req in client.requests]
+    paths = [req[0] + " " + req[1] for req in client.requests if isinstance(req[1], str)]
     assert "POST /Items/123/PlaybackInfo" in paths
     assert "POST /Sessions/Playing" in paths
     assert "POST /Sessions/Playing/Stopped" in paths
@@ -187,7 +202,46 @@ def test_session_raises_when_too_many_progress_errors(frozen_playback_random):
 
     with pytest.raises(EmbyPlayError) as exc_info:
         run(LoopProgressFailingClient(), ITEM, time=200)
-    assert "播放状态设定错误次数过多" in str(exc_info.value)
+    assert "播放状态设定连续错误次数过多" in str(exc_info.value)
+
+
+def test_session_sends_playing_before_progress(frozen_playback_random):
+    client = FakePlaybackClient()
+    run(client, ITEM)
+    playing = next(i for i, req in enumerate(client.requests) if req[1] == "/Sessions/Playing")
+    progress = next(
+        i
+        for i, req in enumerate(client.requests)
+        if req[1] == "/Sessions/Playing/Progress" and (req[2] or {}).get("EventName") == "TimeUpdate"
+    )
+    assert playing < progress
+
+
+def test_session_stops_stream_without_cancel(frozen_playback_random, monkeypatch):
+    import embykeeper.emby.playback as playback
+
+    calls = []
+
+    class StreamTask:
+        def cancel(self):
+            calls.append("cancel")
+
+        def done(self):
+            return True
+
+        def cancelled(self):
+            return True
+
+        def exception(self):
+            return None
+
+    monkeypatch.setattr(playback.asyncio, "create_task", lambda coro: coro.close() or StreamTask())
+    client = FakePlaybackClient()
+    assert run(client, ITEM) is True
+
+    assert "cancel" not in calls  # curl_cffi 流任务不可 cancel
+    assert any(req[0] == "stop_stream" for req in client.requests)
+    assert any(req[0] == "await_stream_stop" for req in client.requests)
 
 
 def test_session_warns_when_stream_task_raises(frozen_playback_random, monkeypatch):
@@ -197,11 +251,14 @@ def test_session_warns_when_stream_task_raises(frozen_playback_random, monkeypat
         def cancel(self):
             pass
 
-        def __await__(self):
-            async def _raise():
-                raise RuntimeError("boom")
+        def done(self):
+            return True
 
-            return _raise().__await__()
+        def cancelled(self):
+            return False
+
+        def exception(self):
+            return RuntimeError("boom")
 
     monkeypatch.setattr(playback.asyncio, "create_task", lambda coro: coro.close() or BoomTask())
     client = FakePlaybackClient()

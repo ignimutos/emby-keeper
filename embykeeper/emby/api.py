@@ -261,8 +261,14 @@ class Emby:
     async def _open_stream_with_fallback(self, url, length, play_session_id):
         return await self._transport._open_stream_with_fallback(url, length, play_session_id)
 
-    async def _stream_media(self, url, play_session_id):
-        return await self._transport._stream_media(url, play_session_id)
+    def stop_stream(self, holder):
+        return self._transport.stop_stream(holder)
+
+    async def await_stream_stop(self, task, timeout=5.0):
+        return await self._transport.await_stream_stop(task, timeout)
+
+    async def _stream_media(self, url, play_session_id, holder=None):
+        return await self._transport._stream_media(url, play_session_id, holder)
 
     async def login(self):
         return await self._transport.login()
