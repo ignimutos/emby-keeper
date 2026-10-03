@@ -175,6 +175,9 @@ class ConfigManager(ProxyBase):
         c.add(comment("模拟观看的随机时长范围 (秒), 账号未单独配置时使用全局设置:"))
         c["time"] = default_emby_account.time
         c.add(nl())
+        c.add(comment("模拟观看的流媒体接收限速 (KB/s), 账号未单独配置时使用全局设置; 0 为不限速:"))
+        c["speed_limit"] = 1
+        c.add(nl())
         c.add(comment("是否校验 HTTPS 证书, 默认 false (自签证书服务器可正常访问):"))
         c["verify"] = default_config.emby.verify
         c.add(nl())
@@ -213,6 +216,8 @@ class ConfigManager(ProxyBase):
         a.add(comment(item({"time_range": default_config.emby.time_range}).as_string()))
         a.add(comment("是否校验 HTTPS 证书, 默认使用全局设置 emby.verify:"))
         a.add(comment(item({"verify": True}).as_string()))
+        a.add(comment("流媒体接收限速 (KB/s), 默认使用全局设置 emby.speed_limit; 0 为不限速:"))
+        a.add(comment(item({"speed_limit": 1}).as_string()))
         a.add(comment("以下指纹设置默认使用全局 emby.*; 如需单账号覆盖请取消注释:"))
         a.add(comment(item({"client": "Hills"}).as_string()))
         a.add(comment(item({"device": "my-device"}).as_string()))

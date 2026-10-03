@@ -31,6 +31,7 @@ EMBY_FINGERPRINT_FIELDS = ("client", "device", "device_id", "client_version", "u
 DEFAULT_EMBY_CLIENT = "Hills"
 DEFAULT_EMBY_CLIENT_VERSION = "1.6.1"
 DEFAULT_EMBY_WATCH_TIME = [300, 600]
+DEFAULT_EMBY_SPEED_LIMIT_KBPS = 1
 
 
 class EmbyEnv(BaseModel):
@@ -71,6 +72,19 @@ class Emby:
             return bool(config.emby.verify)
         except RuntimeError:
             return False
+
+    @property
+    def max_recv_speed(self):
+        """流媒体接收限速 (字节/秒); 0 为不限速. 账号覆盖 > 全局 > 默认 1 KB/s."""
+        limit_kbps = self.a.speed_limit
+        if limit_kbps is None:
+            try:
+                limit_kbps = config.emby.speed_limit
+            except RuntimeError:
+                limit_kbps = None
+        if limit_kbps is None:
+            limit_kbps = DEFAULT_EMBY_SPEED_LIMIT_KBPS
+        return int(limit_kbps * 1024)
 
     @property
     def hostname(self):

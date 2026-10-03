@@ -91,6 +91,7 @@ class EmbyAccount(ConfigModel):
     allow_stream: Optional[bool] = False
     use_proxy: Optional[bool] = True
     verify: Optional[bool] = None
+    speed_limit: Optional[int] = Field(None, ge=0)
     play_id: Optional[str] = None
     enabled: Optional[bool] = True
 
@@ -115,6 +116,7 @@ class EmbyConfig(MediaServerBaseConfig):
     client_version: Optional[str] = None
     useragent: Optional[str] = None
     verify: Optional[bool] = False
+    speed_limit: Optional[int] = Field(None, ge=0)
     account: Optional[List[EmbyAccount]] = []
 
 

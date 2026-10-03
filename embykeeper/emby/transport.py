@@ -294,7 +294,7 @@ class EmbyTransport:
             method="GET",
             path=url,
             stream=True,
-            max_recv_speed=1024,
+            max_recv_speed=owner.max_recv_speed,
             timeout=None,
             _session_kwargs={
                 "headers": stream_headers,
@@ -315,7 +315,6 @@ class EmbyTransport:
             try:
                 async for chunk in resp.aiter_content(chunk_size=1024):
                     length += len(chunk)
-                    await asyncio.sleep(random.random())
                 return
             except RequestsError:
                 if (datetime.now() - last_err_time).total_seconds() > 5:

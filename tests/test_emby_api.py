@@ -1801,6 +1801,34 @@ def test_verify_uses_account_value():
     assert client.verify is True
 
 
+def test_max_recv_speed_uses_account_value():
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", speed_limit=8)
+    client = Emby(account)
+    assert client.max_recv_speed == 8 * 1024
+
+
+def test_max_recv_speed_falls_back_to_global(monkeypatch):
+    monkeypatch.setattr(emby_api_module, "config", SimpleNamespace(emby=SimpleNamespace(speed_limit=4)))
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    assert client.max_recv_speed == 4 * 1024
+
+
+def test_max_recv_speed_zero_account_means_unlimited():
+    """speed_limit=0 是合法的"不限速", 不能被当成未配置而回落到默认."""
+    account = EmbyAccount(url="https://example.com", username="user", password="pass", speed_limit=0)
+    client = Emby(account)
+    assert client.max_recv_speed == 0
+
+
+def test_max_recv_speed_defaults_when_config_unloaded():
+    from embykeeper.emby.api import DEFAULT_EMBY_SPEED_LIMIT_KBPS
+
+    account = EmbyAccount(url="https://example.com", username="user", password="pass")
+    client = Emby(account)
+    assert client.max_recv_speed == DEFAULT_EMBY_SPEED_LIMIT_KBPS * 1024
+
+
 def test_configured_watch_time_defaults_when_config_unloaded():
     from embykeeper.emby.api import DEFAULT_EMBY_WATCH_TIME
 

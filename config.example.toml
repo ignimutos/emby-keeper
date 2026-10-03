@@ -21,6 +21,9 @@ concurrency = 1
 # 模拟观看的随机时长范围 (秒), 账号未单独配置时使用全局设置:
 time = [300, 600]
 
+# 模拟观看的流媒体接收限速 (KB/s), 账号未单独配置时使用全局设置; 0 为不限速:
+speed_limit = 1
+
 # 是否校验 HTTPS 证书, 默认 false (自签证书服务器可正常访问):
 verify = false
 
@@ -63,6 +66,9 @@ password = "B(1yrz_owJ"
 
 # 是否校验 HTTPS 证书, 默认使用全局设置 emby.verify:
 # verify = true
+
+# 流媒体接收限速 (KB/s), 默认使用全局设置 emby.speed_limit; 0 为不限速:
+# speed_limit = 1
 
 # 以下指纹设置默认使用全局 emby.*; 如需单账号覆盖请取消注释:
 # client = "Hills"

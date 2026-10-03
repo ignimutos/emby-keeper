@@ -40,6 +40,7 @@ time_range = "<11:00AM,11:00PM>"   # 每日保活时间范围
 interval_days = "<7,12>"           # 每隔 7~12 天保活一次
 concurrency = 1                    # 同时保活的最大账号数
 time = [300, 600]                  # 模拟观看时长范围 (秒)
+speed_limit = 1                    # 流媒体接收限速 (KB/s), 0 为不限速
 verify = false                     # 是否校验 HTTPS 证书
 client = "Hills"                   # 全局指纹默认值
 # device / device_id: 默认不配置, 程序自动生成并缓存 (每台安装随机)
@@ -50,10 +51,11 @@ useragent = "Hills/1.6.1 (android; 15)"
 url = "https://example.com:443"
 username = "user"
 password = "pass"
-# 可选: 覆盖全局指纹 / 时长 / 时间范围 / 证书校验
+# 可选: 覆盖全局指纹 / 时长 / 时间范围 / 限速 / 证书校验
 # time = [300, 600]
 # interval_days = 7
 # time_range = "<8:00AM,10:00AM>"
+# speed_limit = 1                  # 流媒体限速 (KB/s), 覆盖全局 emby.speed_limit
 # verify = true
 
 [proxy]                            # 可选
@@ -70,6 +72,14 @@ apprise_uri = "tgram://bot_token/chat_id"
 ### 证书校验
 
 `verify` 默认 `false`，即不校验证书（多数 Emby/自建服务器为自签证书）。如服务器证书可信且希望校验证书，设 `[emby] verify = true`；每账号可用 `[emby.account]` 的 `verify` 单独覆盖。
+
+### 限速
+
+`speed_limit` 限制模拟播放时拉取媒体流的接收速率，单位为 **KB/s**，`0` 表示不限速。默认 `1`（约 1 KB/s，流量最小）；可在 `[emby]` 设全局默认值，并在 `[emby.account]` 中按账号覆盖。
+
+> **注意：部分服务器对速度有要求。** 这些服务器按媒体流是否被正常消费来判定会话是否活跃。限速过低（**包括默认的 1 KB/s**）时，连接会在约两分钟后被判为空闲并关闭，随后进度上报接口返回 `409 playback_lease_inactive`，表现为**保活因"接口请求失败/播放中断"而失败**。若在这些服务器上保活失败，请调高 `speed_limit`（或设为 `0` 不限速）后重试。
+
+调高限速本质是**真实下载**（模拟播放时会实际拉取视频字节，读完即丢不落盘），会成倍增加流量与服务器负载，也可能引起管理员注意，非必要不建议设高。速率相关的行为可参考以下实测：不开流会立即失效，1 KB/s 约 140 秒失效，满速可长时间存活。
 
 ### 通知
 

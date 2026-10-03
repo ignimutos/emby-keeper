@@ -75,6 +75,7 @@ class FakeOwner:
         )
         self.proxy = None
         self.verify = False
+        self.max_recv_speed = 1024
         self.useragent = None
         self.env = SimpleNamespace(
             client="Hills", device="D", device_id="ID", client_version="1.6.1", useragent="Hills/1.6.1"
@@ -314,6 +315,24 @@ def test_request_raises_connect_error_when_retries_exhausted_without_error(froze
 
     with pytest.raises(EmbyConnectError):
         asyncio.run(t._request("GET", "/x"))
+
+
+def test_open_stream_passes_owner_max_recv_speed():
+    """流媒体接收限速由 owner.max_recv_speed 提供并透传给 _request."""
+    captured = {}
+
+    async def fake_request(method, path, **kwargs):
+        captured.update(kwargs)
+        return FakeResponse(200)
+
+    owner = FakeOwner()
+    owner.max_recv_speed = 8 * 1024
+    owner._request = fake_request
+    t = EmbyTransport(owner)
+
+    asyncio.run(t._open_stream_with_fallback("/videos/1/stream", 0, "ps"))
+
+    assert captured["max_recv_speed"] == 8 * 1024
 
 
 def test_is_http2_flow_control_error():
